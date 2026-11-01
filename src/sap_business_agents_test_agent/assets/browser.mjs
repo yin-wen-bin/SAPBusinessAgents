@@ -2,6 +2,7 @@
 import {readFile, writeFile, mkdir} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import path from 'node:path';
+import {QueryWriteGuard} from './query-guard.mjs';
 
 const allowedActions = new Set(['navigate','click','fill','select','wait_for','expect_text','expect_count','screenshot','capture_json','capture_table']);
 const pointer = (value, address = '') => address.split('/').filter(Boolean).reduce((v,k) => v?.[k.replace(/~1/g,'/').replace(/~0/g,'~')], value);
@@ -17,6 +18,7 @@ export async function run(configurationPath, caseId) {
   if(config.case.id !== caseId) throw Error('case_identity_mismatch');
   const {case: spec, target, output} = config;
   const allowedOrigins = new Set([new URL(target.site_url).origin, new URL(target.api_url).origin]);
+  const queryGuard = new QueryWriteGuard();
   await mkdir(output, {recursive:true});
   let browser, context, page;
   const evidence = [], errors = [], escaped = [], consoleMessages = [];
@@ -26,16 +28,33 @@ export async function run(configurationPath, caseId) {
     const {chromium} = require(process.env.SAPBA_PLAYWRIGHT_MODULE || 'playwright');
     browser = await chromium.launch({headless:true, channel:process.env.SAPBA_BROWSER_CHANNEL || 'msedge'});
     context = await browser.newContext({viewport:spec.viewport || {width:1440,height:900}});
-    await context.tracing.start({screenshots:true, snapshots:true});
+    if(target.profile === 'existing-platform-free-query' && target.frozen_ui_root)
+      await context.grantPermissions(['local-network-access'],{origin:target.site_url});
+    await context.tracing.start({screenshots:false, snapshots:false, sources:false});
     page = await context.newPage();
     page.setDefaultTimeout(Math.min(spec.action_timeout_ms || 30000, 120000));
     page.on('pageerror', error => errors.push(error.message));
     page.on('console', message => consoleMessages.push({type:message.type(),text:message.text()}));
+    page.on('response', async response => {
+      if(target.profile !== 'existing-platform-free-query') return;
+      try {const url = new URL(response.url());
+        if(url.origin === new URL(target.api_url).origin && response.ok()) queryGuard.observe(url.pathname, await response.json());
+      } catch {}
+    });
     await context.route('**/*', async route => {
       const request = route.request(), url = new URL(request.url());
       if(!allowedOrigins.has(url.origin)) {
         escaped.push({origin:url.origin,method:request.method()});
         return route.abort();
+      }
+      if(target.frozen_ui_root && url.origin === new URL(target.site_url).origin && url.origin !== new URL(target.api_url).origin) {
+        const relative = decodeURIComponent(url.pathname).replace(/^\/SAPBusinessAgents(?=\/)/,'');
+        const filename = path.resolve(target.frozen_ui_root, '.' + (relative.endsWith('/') ? relative + 'index.html' : relative));
+        if(!filename.startsWith(path.resolve(target.frozen_ui_root) + path.sep)) return route.abort();
+        const mime = filename.endsWith('.html') ? 'text/html' : /\.m?js$/.test(filename) ? 'application/javascript'
+          : filename.endsWith('.css') ? 'text/css' : filename.endsWith('.svg') ? 'image/svg+xml' : 'application/octet-stream';
+        try {return route.fulfill({status:200,contentType:mime,body:await readFile(filename)});}
+        catch {return route.fulfill({status:404,body:''});}
       }
       const fixture = (spec.fixtures || []).find(item => item.path === url.pathname && (item.method || 'GET') === request.method());
       if(fixture) return route.fulfill({status:fixture.status || 200,contentType:'application/json',body:JSON.stringify(fixture.body)});
@@ -46,6 +65,15 @@ export async function run(configurationPath, caseId) {
       if(/\/(integration-actions|authentication|sdk-runtimes|sdks|plugins)(\/|$)/.test(url.pathname) && request.method() !== 'GET') {
         escaped.push({origin:url.origin,path:url.pathname,method:request.method()});
         return route.abort();
+      }
+      if(target.profile === 'existing-platform-free-query' && !queryGuard.allow(request.method(), url.pathname, request.postDataJSON() || {})) {
+        escaped.push({path:url.pathname,method:request.method()});
+        return route.abort();
+      }
+      if(target.profile === 'existing-platform-free-query' && request.method() === 'POST') {
+        const response = await route.fetch({maxRedirects:0,maxRetries:0});
+        if(response.ok()) {try {queryGuard.observe(url.pathname,await response.json());} catch {}}
+        return route.fulfill({response});
       }
       // Product mutation goes only to the isolation-verified target, not real mail/accounts.
       return route.continue();
@@ -76,7 +104,7 @@ export async function run(configurationPath, caseId) {
           await page.screenshot({path:path.join(output,name),fullPage:true}); evidence.push(name); break;
         }
         case 'capture_json': {
-          const response = await page.request.get(localPath(target.api_url, action.path));
+          const response = await page.request.get(localPath(target.api_url, action.path),{maxRedirects:0});
           if(!response.ok()) throw Error('observation_request_failed');
           const body = await response.json();
           const observation = {rows:pointer(body,action.rows_pointer),

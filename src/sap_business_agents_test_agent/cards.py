@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from pathlib import Path
 
 from .common import atomic_bytes, digest
@@ -15,11 +16,14 @@ def render(store, output, plan_id=None, task_id=None):
     elif plan_id:
         plan = store.get("plan", plan_id)
         payload = {"stage": "start", "plan_id": plan_id, "plan_digest": plan["digest"],
+                   "request_id": "start:" + plan_id + ":" + uuid.uuid4().hex,
                    "selected": plan["selected"], "cases": [{k: c[k] for k in ("id", "feature", "scenario", "mode")} for c in plan["cases"]]}
     else:
         inventory = discover(store.repository)
         payload = {"stage": "select", "inventory_digest": inventory["digest"],
-                   "features": [{k: f[k] for k in ("id", "title", "default", "operations")} for f in inventory["features"]]}
+                   "features": [{**{k: f[k] for k in ("id", "title", "default", "operations", "operation_titles")},
+                                 "children": [{"id": c["id"], "title": c["title"]} for c in f["children"]]}
+                                for f in inventory["features"]]}
     payload["repository"] = str(store.repository)
     serialized = json.dumps(payload, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
     template = (Path(__file__).parent / "assets/card.html").read_text(encoding="utf-8")

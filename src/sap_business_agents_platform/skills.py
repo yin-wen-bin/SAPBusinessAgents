@@ -171,9 +171,12 @@ class SkillRegistry:
             )
             try:
                 _stdout, _stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-            except TimeoutError as exc:
-                process.kill()
+            except (TimeoutError, asyncio.CancelledError) as exc:
+                if process.returncode is None:
+                    process.kill()
                 await process.wait()
+                if isinstance(exc, asyncio.CancelledError):
+                    raise
                 raise SkillError(f"Skill {skill_id} timed out.") from exc
             try:
                 output_bytes = output_path.read_bytes()

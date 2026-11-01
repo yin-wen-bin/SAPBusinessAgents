@@ -13,19 +13,33 @@
   const actions = root.querySelector('[data-actions]');
   const feedback = root.querySelector('[data-feedback]');
   const fallback = root.querySelector('[data-fallback]');
-  const checkboxInputs = [];
-  const selected = () => checkboxInputs.filter(input => input.checked).map(input => input.value);
+  const groups = [];
+  const selected = () => groups.flatMap(group => group.input.checked && !group.input.indeterminate
+    ? [group.input.value] : group.leaves.filter(input => input.checked).map(input => input.value));
+  const syncGroup = group => {
+    const count = group.leaves.filter(input => input.checked).length;
+    group.input.checked = count === group.leaves.length;
+    group.input.indeterminate = count > 0 && count < group.leaves.length;
+  };
   const showState = state => {
     if(payload.stage !== 'select' || state?.modelContent?.inventory_digest !== payload.inventory_digest) return;
     const values = state.modelContent.selected;
-    if(Array.isArray(values)) checkboxInputs.forEach(input => { input.checked = values.includes(input.value); });
+    if(Array.isArray(values)) groups.forEach(group => {
+      group.leaves.forEach(input => {input.checked = values.includes(group.input.value) || values.includes(input.value);});
+      syncGroup(group);
+    });
     updateCount();
   };
-  function updateCount() { feedback.textContent = `已选择 ${selected().length} 类功能`; }
+  function updateCount() { feedback.textContent = `已选择 ${new Set(selected().map(value=>value.split(/[\/@]/)[0])).size} 类功能`; }
+  const remember = () => {
+    updateCount();
+    window.openai?.setWidgetState?.({modelContent:{inventory_digest:payload.inventory_digest,selected:selected()},privateContent:null})?.catch(() => {});
+  };
   const button = (label, operation, body, primary = false) => {
     const item = document.createElement('button');
     item.type = 'button'; item.className = primary ? 'btn btn-primary' : 'btn'; item.textContent = label;
     item.addEventListener('click', async () => {
+      if(item.disabled) return;
       const fields = typeof body === 'function' ? body() : body;
       if(payload.stage === 'select' && !fields.selected.length) {feedback.textContent = '请至少选择一个功能';return;}
       const prompt = `$sapba-auto-test ${operation}\n` + JSON.stringify({repository:payload.repository,...fields});
@@ -45,15 +59,29 @@
   };
   if(payload.stage === 'select') {
     for(const feature of payload.features) {
+      const section = document.createElement('div');
       const label = document.createElement('label'); label.className = 'form-check';
       const input = document.createElement('input'); input.className = 'form-check-input'; input.type = 'checkbox';
+      input.setAttribute('data-feature-check',feature.id);
       input.value = feature.id; input.checked = feature.default;
       const text = document.createElement('span'); text.className = 'form-check-label'; text.textContent = feature.title;
-      label.append(input,text); choices.append(label); checkboxInputs.push(input);
-      input.addEventListener('change', () => {
-        updateCount();
-        window.openai?.setWidgetState?.({modelContent:{inventory_digest:payload.inventory_digest,selected:selected()},privateContent:null})?.catch(() => {});
-      });
+      label.append(input,text); section.append(label); choices.append(section);
+      const details = document.createElement('details');
+      const summary = document.createElement('summary'); summary.textContent = '选择测试项'; details.append(summary);
+      const group = {input,leaves:[]}; groups.push(group);
+      const items = feature.id === 'fixed-agents' && feature.children?.length
+        ? feature.children.map(child=>({id:feature.id+'@'+child.id,title:typeof child.title==='string'?child.title:child.title?.zh || child.id}))
+        : feature.operations.map(operation=>({id:feature.id+'/'+operation,title:feature.operation_titles?.[operation] || operation}));
+      for(const item of items) {
+        const leafLabel = document.createElement('label'); leafLabel.className = 'form-check';
+        const leaf = document.createElement('input'); leaf.type = 'checkbox'; leaf.className = 'form-check-input';
+        leaf.value = item.id; leaf.checked = feature.default; group.leaves.push(leaf);
+        const leafText = document.createElement('span'); leafText.className = 'form-check-label'; leafText.textContent = item.title;
+        leafLabel.append(leaf,leafText); details.append(leafLabel);
+        leaf.addEventListener('change',()=>{syncGroup(group);remember();});
+      }
+      section.append(details);
+      input.addEventListener('change',()=>{group.leaves.forEach(leaf=>{leaf.checked=input.checked;});input.indeterminate=false;remember();});
     }
     updateCount(); showState(window.openai?.widgetState);
     window.addEventListener('openai:set_globals', event => showState(event.detail?.globals?.widgetState));
@@ -69,7 +97,7 @@
       for(const value of [entry.scenario,entry.mode,entry.status || '已生成']) row.insertCell().textContent=value;
     }
     area.append(table);
-    if(payload.stage === 'start') button('开始测试','start',{plan_id:payload.plan_id,plan_digest:payload.plan_digest},true);
+    if(payload.stage === 'start') button('开始测试','start',{plan_id:payload.plan_id,plan_digest:payload.plan_digest,request_id:payload.request_id},true);
     else {
       button('停止','cancel',{task_id:payload.task_id});
       button('继续上次测试','resume',{task_id:payload.task_id});

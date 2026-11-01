@@ -210,6 +210,8 @@ FI 清账不自动证明银行到账；MRP模拟不等于正式ATP；处理建�
 
 [开发指南](docs/developer-guide.md) 收录架构、Schema、接口、离线回归、目录校验、贡献及静态部署说明。历史验收报告按原日期和适用版本保留，不代表重新验证了当前环境。
 
+[Codex App 内自动测试](docs/native-auto-test.md)：在聊天中使用 `$sapba-auto-test` 选择功能、生成脚本、执行测试并批量修复。
+
 ## English
 
 ### Purpose and audience
@@ -417,6 +419,8 @@ This index is generated from current manifests and lifecycle records. Active lif
 ### Development, testing and deployment
 
 The [Developer guide](docs/developer-guide.md) covers architecture, schemas, interfaces, offline regression, catalog checks, contribution and static deployment. Historical acceptance reports retain their original dates and applicable versions; they do not certify a new environment.
+
+[Native Codex testing](docs/native-auto-test.md): use `$sapba-auto-test` in the project chat to select features, generate scripts, execute tests, and repair failures in batches.
 
 <!-- Compatibility anchors retained for existing README links. -->
 <a id="项目功能"></a><a id="当前-agent"></a><a id="仓库结构"></a><a id="agent-清单契约"></a>

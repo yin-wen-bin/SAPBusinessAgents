@@ -13,11 +13,18 @@ def parser():
     root.add_argument("--repository", type=Path, default=Path.cwd())
     sub = root.add_subparsers(dest="command", required=True)
     sub.add_parser("inventory")
+    sub.add_parser("capabilities")
+    sap = sub.add_parser("sap-read")
+    sap.add_argument("--task", required=True)
+    sap.add_argument("--case", required=True)
+    sap.add_argument("--role", choices=("sample", "baseline", "anchor"), required=True)
     prepare = sub.add_parser("prepare")
     prepare.add_argument("--select", nargs="+")
     prepare.add_argument("--cases", type=Path)
     prepare.add_argument("--inventory-digest")
     prepare.add_argument("--max-repairs", type=int, default=3)
+    prepare.add_argument("--parent-task")
+    prepare.add_argument("--revision-reason")
     start = sub.add_parser("start")
     start.add_argument("--plan", required=True)
     start.add_argument("--digest", required=True)
@@ -31,6 +38,10 @@ def parser():
         command.add_argument("--task", required=True)
         if name == "resume":
             command.add_argument("--interrupted-case", action="append", default=[])
+        if name == "environment":
+            command.add_argument("--reuse-platform", action="store_true")
+        if name == "begin-final":
+            command.add_argument("--reuse-complete-round", action="store_true")
     run = sub.add_parser("run-case")
     run.add_argument("--task", required=True)
     run.add_argument("--case", required=True)
@@ -39,10 +50,24 @@ def parser():
     finish.add_argument("--case", required=True)
     finish.add_argument("--token", required=True)
     finish.add_argument("--result", type=Path, required=True)
+    diagnosis = sub.add_parser("diagnose")
+    diagnosis.add_argument("--task", required=True)
+    diagnosis.add_argument("--file", type=Path, required=True)
+    revision = sub.add_parser("revise-locators")
+    revision.add_argument("--task", required=True)
+    revision.add_argument("--file", type=Path, required=True)
+    native = sub.add_parser("revise-native")
+    native.add_argument("--task", required=True)
+    native.add_argument("--file", type=Path, required=True)
     target = sub.add_parser("bind-target")
     target.add_argument("--task", required=True)
     target.add_argument("--site-url", required=True)
     target.add_argument("--api-url", required=True)
+    target.add_argument("--native-identity", action="store_true")
+    platform = sub.add_parser("bind-platform")
+    platform.add_argument("--task", required=True)
+    platform.add_argument("--site-url", required=True)
+    platform.add_argument("--frozen-ui", action="store_true")
     install = sub.add_parser("install")
     install.add_argument("--codex-home", type=Path)
     install.add_argument("--register-mcp", action="store_true")
@@ -55,9 +80,15 @@ def dispatch(args):
     command = args.command
     if command == "inventory":
         return inventory.discover(store.repository)
+    if command in {"sap-read", "capabilities"}:
+        import asyncio
+        from . import sap
+        return asyncio.run(sap.capabilities(store.repository) if command == "capabilities" else
+                           sap.read(store, args.task, args.case, args.role))
     if command == "prepare":
         cases = read_json(args.cases) if args.cases else None
-        return plans.prepare(store, args.select, cases, args.inventory_digest, args.max_repairs)
+        return plans.prepare(store, args.select, cases, args.inventory_digest, args.max_repairs,
+                             args.parent_task, args.revision_reason)
     if command == "start":
         return state.start(store, args.plan, args.digest, args.request_id)
     if command == "card":
@@ -70,6 +101,14 @@ def dispatch(args):
         return runner.run_case(store, args.task, args.case)
     if command == "finish-case":
         return runner.finish_case(store, args.task, args.case, args.token, read_json(args.result))
+    if command == "diagnose":
+        return state.diagnose(store, args.task, read_json(args.file))
+    if command == "revise-locators":
+        payload = read_json(args.file)
+        return plans.revise_locators(store, args.task, payload["corrections"], payload["reason"], payload["evidence"])
+    if command == "revise-native":
+        payload = read_json(args.file)
+        return plans.revise_native_executor(store, args.task, payload["case_ids"], payload["reason"], payload["script"])
     if command == "run-round":
         task = store.get("task", args.task)
         output = []
@@ -95,7 +134,7 @@ def dispatch(args):
     if command == "verify-repair":
         return state.verify_repair(store, args.task)
     if command == "begin-final":
-        return state.begin_final(store, args.task)
+        return state.begin_final(store, args.task, args.reuse_complete_round)
     if command == "complete":
         return state.complete(store, args.task)
     if command == "retest":
@@ -105,11 +144,13 @@ def dispatch(args):
     if command == "recover-apply":
         return workspace.recover_application(store, args.task)
     if command == "environment":
-        return workspace.dependency_environment(store, args.task)
+        return workspace.dependency_environment(store, args.task, args.reuse_platform)
     if command == "target-marker":
         return targets.marker(store, args.task)
     if command == "bind-target":
-        return targets.bind(store, args.task, args.site_url, args.api_url)
+        return targets.bind(store, args.task, args.site_url, args.api_url, native_identity=args.native_identity)
+    if command == "bind-platform":
+        return targets.bind_platform(store, args.task, args.site_url, frozen_ui=args.frozen_ui)
     if command == "install":
         from .install import install
         return install(store.repository, args.codex_home, args.register_mcp)

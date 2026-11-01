@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -15,9 +16,31 @@ from .state import claim, record, task_plan
 ASSETS = Path(__file__).parent / "assets"
 
 
-def generate_scripts(store, plan):
+def stop_owned(process):
+    if process.poll() is not None:
+        return
+    if os.name == "nt":
+        # Popen still owns a live handle; kill only that process and its descendants.
+        try:
+            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, timeout=10)
+        except subprocess.TimeoutExpired:
+            # Reap the handle we still own, but never claim descendant cleanup.
+            process.kill()
+            process.wait(timeout=10)
+            raise TestAgentError("owned_process_tree_cleanup_unconfirmed") from None
+    else:
+        os.killpg(process.pid, signal.SIGTERM)
+    try:
+        process.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        process.wait(timeout=10)
+
+
+def generate_scripts(store, plan, db=None):
     root = store.root / "suites" / plan["id"]
     atomic_bytes(root / "browser.mjs", (ASSETS / "browser.mjs").read_bytes())
+    atomic_bytes(root / "query-guard.mjs", (ASSETS / "query-guard.mjs").read_bytes())
     for case in plan["cases"]:
         entry = ("# Generated deterministic entrypoint; Codex runs in the host conversation.\n"
                  "import sys\nfrom sap_business_agents_test_agent.cli import main\n"
@@ -28,8 +51,28 @@ def generate_scripts(store, plan):
         if case["kind"] == "browser":
             entry_js = "import {run} from './browser.mjs';\nawait run(process.argv[2], " + json.dumps(case["id"]) + ");\n"
             atomic_bytes(root / (case["id"] + ".spec.mjs"), entry_js.encode("utf-8"))
-    write_json(root / "scripts.json", {"plan_id": plan["id"], "plan_digest": plan["digest"],
-               "scripts": {c["id"]: c["id"] + ".py" for c in plan["cases"]}})
+    manifest = {"plan_id": plan["id"], "plan_digest": plan["digest"],
+                "scripts": {c["id"]: c["id"] + ".py" for c in plan["cases"]},
+                "digests": {p.name: digest(p.read_bytes()) for p in root.iterdir() if p.suffix in {".py", ".mjs"}}}
+    write_json(root / "scripts.json", manifest)
+    if db is not None:
+        store.put("scripts", plan["id"], manifest, db)
+    else:
+        with store.transaction() as connection:
+            store.put("scripts", plan["id"], manifest, connection)
+
+
+def check_scripts(store, plan):
+    manifest = store.get("scripts", plan["id"])
+    for name, expected in manifest["digests"].items():
+        path = safe_path(store.root / "suites" / plan["id"], name)
+        if not path.is_file() or digest(path.read_bytes()) != expected:
+            raise TestAgentError("generated_script_changed", path=name)
+    revision = plan.get("native_execution_revision")
+    if revision:
+        source = safe_path(store.task_dir(revision["task_id"]), revision["script"])
+        if not source.is_file() or digest(source.read_bytes()) != revision["script_digest"]:
+            raise TestAgentError("native_executor_changed")
 
 
 def python_for(store):
@@ -98,6 +141,8 @@ def _command(store, task, case, evidence_root):
 
 
 def run_case(store, task_id, case_id):
+    task = store.get("task", task_id)
+    check_scripts(store, task_plan(store, task))
     owned = claim(store, task_id, case_id)
     if owned.get("already_recorded"):
         return owned
@@ -106,10 +151,22 @@ def run_case(store, task_id, case_id):
     relative = f"evidence/{task['round']}/{case_id}/execution"
     output = safe_path(store.task_dir(task_id), relative)
     output.mkdir(parents=True, exist_ok=True)
+    if shutil.disk_usage(output).free < 256 * 1024 * 1024:
+        write_json(output / "storage.json", {"code": "evidence_storage_insufficient", "minimum_free_bytes": 256 * 1024 * 1024})
+        return record(store, task_id, case_id, token, {"status": "blocked", "code": "evidence_storage_insufficient",
+                      "layer": "environment", "evidence": [relative + "/storage.json"]})
     if owned["blocked_dependencies"]:
         write_json(output / "dependencies.json", {"dependencies": owned["blocked_dependencies"]})
         return record(store, task_id, case_id, token, {"status": "blocked", "code": "dependency_not_passed",
                       "evidence": [relative + "/dependencies.json"]})
+    if case["kind"] in {"browser", "native"}:
+        from .targets import recheck
+        try:
+            task["target"] = recheck(store, task_id)
+        except TestAgentError as error:
+            write_json(output / "target-error.json", {"code": error.code})
+            return record(store, task_id, case_id, token, {"status": "blocked", "code": error.code,
+                          "evidence": [relative + "/target-error.json"]})
     if case["kind"] == "native":
         write_json(output / "native-instructions.json", {"case": case, "ticket": owned["ticket"],
                    "source": task["workspace"]["source"], "target": task.get("target"),
@@ -120,24 +177,22 @@ def run_case(store, task_id, case_id):
         command, cwd, env = _command(store, task, case, output)
         timeout = min(max(int(case.get("timeout_seconds", 600)), 1), 3600)
         with (output / "process.log").open("wb") as log:
-            process = subprocess.Popen(command, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT)
+            process = subprocess.Popen(command, cwd=cwd, env=env, stdout=log, stderr=subprocess.STDOUT,
+                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
+                start_new_session=os.name != "nt")
             write_json(output / "owned-process.json", {"pid": process.pid, "parent_pid": os.getpid(), "token": token})
             started, cancelled, timed_out = time.monotonic(), False, False
             while process.poll() is None:
                 cancelled = store.get("task", task_id)["cancel_requested"]
                 timed_out = time.monotonic() - started > timeout
                 if cancelled or timed_out:
-                    process.terminate()
-                    try:
-                        process.wait(timeout=10)
-                    except subprocess.TimeoutExpired:
-                        process.kill()
-                        process.wait(timeout=10)
+                    stop_owned(process)
                     break
                 time.sleep(0.15)
         result = {"status": "cancelled" if cancelled else "failed" if timed_out or process.returncode else "passed",
                   "code": "task_cancelled" if cancelled else "case_timeout" if timed_out else "assertion_failed" if process.returncode else "checks_passed",
                   "layer": case["kind"], "exit_code": process.returncode,
+                  "location": (case.get("test_refs") or [case["feature"]])[0],
                   "evidence": [relative + "/process.log"]}
         if case["kind"] == "browser":
             browser_result = output / "result.json"

@@ -48,8 +48,8 @@ def resolve(broker, run_id, binding):
             raise ValueError("value_currency_or_source_mismatch")
         return str(item[field]), record["evidence_ref"], field == "amount", item
     call, rows = evidence(broker, run_id, binding.evidence_ref)
-    from .source_semantics import profile
-    p = profile(call["safe_input"]["plan"], state["source_semantics_catalog"])
+    from .technical_record_proof import record_profile
+    p = record_profile(broker, run_id, call)
     if not p or set(binding.source_key) != set(p["technical_key"]):
         raise ValueError("value_complete_source_key_required")
     keys = [tuple(str(r.get(k)) for k in p["technical_key"]) for r in rows]
@@ -81,6 +81,13 @@ def resolve(broker, run_id, binding):
         if binding.currency_field or isinstance(row[field], (dict, list)):
             raise ValueError("value_source_field_invalid")
         value = "" if row[field] is None else str(row[field])
+        metadata = (p.get("fields") or {}).get(field) or {}
+        if p.get("technical_only") and (metadata.get("display_format") == "Date" or metadata.get("data_type") == "Edm.Date"):
+            from .source_semantics import day
+            parsed = day(row[field])
+            if parsed is None:
+                raise ValueError("value_source_date_invalid")
+            value = parsed.isoformat()
     return value, binding.evidence_ref, amount, {"row_key": tuple(row[k] for k in p['technical_key']), "field": field}
 
 
@@ -129,6 +136,8 @@ def verify(broker, run_id, presentation, *, required):
                         continue
                     try:
                         value, ref, amount, proof = resolve(broker, run_id, binding)
+                        if col.format == "currency" and not amount:
+                            raise ValueError("value_monetary_source_semantics_required")
                         if row.values[ci].zh != value or row.values[ci].en != value:
                             raise ValueError("value_canonical_string_required")
                         if ref not in set(row.evidence_refs) | refs:
@@ -154,7 +163,8 @@ def verify(broker, run_id, presentation, *, required):
                 ref = next(iter(source_refs))
                 try:
                     call, source_rows = evidence(broker, run_id, ref)
-                    p = profile(call['safe_input']['plan'], broker.store.get_harness_state(run_id)['source_semantics_catalog'])
+                    from .technical_record_proof import record_profile
+                    p = record_profile(broker, run_id, call)
                     if p is None:
                         raise ValueError('value_complete_source_key_required')
                     actual = digest(sorted([list(key) for source, key in displayed_keys if source == ref], key=str))

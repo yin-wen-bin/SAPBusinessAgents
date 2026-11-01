@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sqlite3
 import tempfile
 from contextlib import contextmanager
@@ -30,7 +31,7 @@ def digest(value):
     return hashlib.sha256(raw).hexdigest()
 
 
-def safe_path(root: Path, name: str) -> Path:
+def safe_path(root: Path, name: str, verified_parents: set | None = None) -> Path:
     parts = PurePosixPath(name).parts
     if not parts or "\\" in name or PurePosixPath(name).is_absolute() or any(
         p in {".", ".."} or re.search(r'[<>:"|?*\x00-\x1f]', p) or p.rstrip(" .") != p
@@ -43,8 +44,16 @@ def safe_path(root: Path, name: str) -> Path:
     for parent in [target, *target.parents]:
         if parent == root:
             break
-        if parent.is_symlink() or (hasattr(parent, "is_junction") and parent.is_junction()):
+        if verified_parents is not None and parent in verified_parents:
+            break
+        try:
+            information = parent.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(information.st_mode) or getattr(information, "st_file_attributes", 0) & 0x400:
             raise TestAgentError("path_link_rejected")
+        if stat.S_ISDIR(information.st_mode) and verified_parents is not None:
+            verified_parents.add(parent)
     if not target.resolve().is_relative_to(root):
         raise TestAgentError("path_outside_root")
     if target.is_file() and target.stat().st_nlink > 1:
@@ -74,6 +83,14 @@ def read_json(path):
     return json.loads(Path(path).read_text(encoding="utf-8-sig"))
 
 
+class ClosingConnection(sqlite3.Connection):
+    def __exit__(self, *args):
+        try:
+            return super().__exit__(*args)
+        finally:
+            self.close()
+
+
 class Store:
     """SQLite transactions serialize state changes across CLI and MCP processes."""
 
@@ -93,7 +110,7 @@ class Store:
             """)
 
     def connect(self):
-        connection = sqlite3.connect(self.database, timeout=30)
+        connection = sqlite3.connect(self.database, timeout=30, factory=ClosingConnection)
         connection.row_factory = sqlite3.Row
         return connection
 

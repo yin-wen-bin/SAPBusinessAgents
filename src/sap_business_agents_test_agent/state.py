@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import uuid
 
 from .common import TestAgentError, digest, now, read_json, safe_path, write_json
@@ -18,12 +19,23 @@ def start(store, plan_id, expected_digest, request_id=None):
     task_id = "task_" + request_key[:24]
     with store.transaction() as db:
         try:
+            reference = store.get("start_request", request_key, db)
+            return store.get("task", reference["task_id"], db)
+        except TestAgentError as error:
+            if error.code != "record_not_found":
+                raise
+        try:
             return store.get("task", task_id, db)
         except TestAgentError as error:
             if error.code != "record_not_found":
                 raise
         if discover(store.repository)["digest"] != plan["inventory_digest"]:
             raise TestAgentError("plan_stale")
+        for row in db.execute("SELECT payload FROM documents WHERE kind='task'"):
+            active = json.loads(row[0])
+            if active["plan_id"] == plan_id and active["phase"] not in {"completed", "cancelled"}:
+                store.put("start_request", request_key, {"task_id": active["id"]}, db)
+                return active
         workspace = snapshot(store, task_id, plan["source_digest"])
         task = {"id": task_id, "plan_id": plan_id, "plan_digest": expected_digest,
                 "phase": "collecting", "round": 0, "max_repairs": plan["max_repairs"],
@@ -31,6 +43,7 @@ def start(store, plan_id, expected_digest, request_id=None):
                 "created_at": now(), "cancel_requested": False, "workspace": workspace,
                 "round_source_digest": plan["source_digest"], "repair_history": [], "claims": {}}
         store.put("task", task_id, task, db)
+        store.put("start_request", request_key, {"task_id": task_id}, db)
         store.event(task_id, "task_started", {"plan_id": plan_id, "case_count": len(task["queue"])}, db)
     return task
 
@@ -100,6 +113,8 @@ def record(store, task_id, case_id, token, result):
         if digest(source_files(store.task_dir(task_id) / "source")) != task["round_source_digest"]:
             result = {**result, "status": "blocked", "code": "source_changed_mid_round"}
         case = next(c for c in task_plan(store, task)["cases"] if c["id"] == case_id)
+        from .runner import check_scripts
+        check_scripts(store, task_plan(store, task))
         result = {**result, "case_id": case_id, "mode": case["mode"], "round": task["round"],
                   "claim_token": token, "completed_at": now(), "source_digest": task["round_source_digest"]}
         if result["status"] == "passed" and case["mode"] == "live_sap":
@@ -172,14 +187,45 @@ def failure_groups(store, task):
     for key, result in all_results(task).items():
         if result["status"] not in {"failed", "blocked", "inconclusive"}:
             continue
-        signature = digest({"code": result.get("code", "unknown"), "layer": result.get("layer", cases[key]["kind"]),
+        diagnosis = task.get("diagnoses", {}).get(key, {})
+        if diagnosis.get("observed_code") != result.get("code"):
+            diagnosis = {}
+        category = diagnosis.get("category", "unclassified")
+        signature = diagnosis.get("root_cause_id") or digest({"code": result.get("code", "unknown"), "layer": result.get("layer", cases[key]["kind"]),
                             "location": result.get("location", "")})[:16]
         group = groups.setdefault(signature, {"id": signature, "code": result.get("code", "unknown"),
-                    "status": result["status"], "case_ids": [], "features": [], "automatic_repair": result["status"] == "failed"})
+                    "status": "blocked" if category == "environment" else "inconclusive" if category == "data" else result["status"],
+                    "observed_status": result["status"], "case_ids": [], "features": [],
+                    "category": category,
+                    "automatic_repair": result["status"] == "failed" and category not in {"environment", "data"}})
         group["case_ids"].append(key)
         if cases[key]["feature"] not in group["features"]:
             group["features"].append(cases[key]["feature"])
     return list(groups.values())
+
+
+def diagnose(store, task_id, diagnoses):
+    with store.transaction() as db:
+        task = store.get("task", task_id, db)
+        if task["phase"] != "awaiting_repair" or not round_complete(task):
+            raise TestAgentError("round_not_finished")
+        results = all_results(task)
+        if not isinstance(diagnoses, list):
+            raise TestAgentError("diagnoses_invalid")
+        for entry in diagnoses:
+            if entry.get("category") not in {"product", "test", "environment", "data"} or not entry.get("reason"):
+                raise TestAgentError("diagnosis_category_invalid")
+            from .plans import CASE_ID
+            if not CASE_ID.fullmatch(str(entry.get("root_cause_id", ""))):
+                raise TestAgentError("root_cause_id_invalid")
+            for case_id in entry.get("case_ids", []):
+                if results.get(case_id, {}).get("status") not in {"failed", "blocked", "inconclusive"}:
+                    raise TestAgentError("diagnosis_case_invalid")
+                task.setdefault("diagnoses", {})[case_id] = {**{k: entry[k] for k in ("root_cause_id", "category", "reason")},
+                                                              "observed_code": results[case_id].get("code")}
+        store.put("task", task_id, task, db)
+        store.event(task_id, "failure_diagnoses_saved", {"count": len(diagnoses)}, db)
+        return failure_groups(store, task)
 
 
 def begin_repair(store, task_id):
@@ -216,14 +262,18 @@ def verify_repair(store, task_id):
         # Freeze the immutable plan/oracle in the controller store, never in the candidate tree.
         prior_patch = task["repair_history"][-1]["before_patch"]
         touched = [n for n in patch.keys() | prior_patch.keys() if patch.get(n) != prior_patch.get(n)]
-        if not touched:
+        test_revisions = set(task["repair_history"][-1].get("test_revision_case_ids", []))
+        if not touched and not test_revisions:
             raise TestAgentError("repair_has_no_changes")
         plan = task_plan(store, task)
-        failed = {k for k, r in all_results(task).items() if r["status"] == "failed"}
-        impacted = {c["id"] for c in plan["cases"] if any(
+        frozen_tests = {reference.split("::", 1)[0] for case in plan["cases"] for reference in case.get("test_refs", [])}
+        if any(path in frozen_tests for path in touched):
+            raise TestAgentError("frozen_regression_test_modified")
+        failed = {case_id for group in task["repair_history"][-1]["groups"] for case_id in group["case_ids"]}
+        impacted = test_revisions | {c["id"] for c in plan["cases"] if any(
             n.startswith(prefix) for n in touched for prefix in c.get("impact_paths", []))}
         # Unknown dependencies require a complete selected-suite retest, never a guessed subset.
-        if not impacted or any(not c.get("impact_paths") for c in plan["cases"]):
+        if touched and (not impacted or any(not c.get("impact_paths") for c in plan["cases"])):
             impacted = {c["id"] for c in plan["cases"]}
         task["round"] += 1
         task["queue"] = [c["id"] for c in plan["cases"] if c["id"] in failed | impacted]
@@ -243,13 +293,43 @@ def verify_repair(store, task_id):
         return task
 
 
-def begin_final(store, task_id):
+def begin_final(store, task_id, reuse_complete_round=False):
     with store.transaction() as db:
         task = store.get("task", task_id, db)
         if task["phase"] not in {"awaiting_repair", "finalizing"} or not round_complete(task):
             raise TestAgentError("round_not_finished")
         if task.get("final_round") is not None:
             raise TestAgentError("final_review_already_started")
+        if reuse_complete_round:
+            cases = task_plan(store, task)["cases"]
+            expected = {case["id"] for case in cases}
+            current = current_results(task)
+            if set(task["queue"]) != expected or set(current) != expected:
+                raise TestAgentError("final_review_requires_complete_current_round")
+            if any(result["status"] != "passed" or result.get("round") != task["round"]
+                   or result.get("source_digest") != task["round_source_digest"] for result in current.values()):
+                raise TestAgentError("final_review_requires_verified_current_round")
+            if any(case["mode"] == "live_sap" and current[case["id"]].get("comparison_verified") is not True for case in cases):
+                raise TestAgentError("live_comparison_required")
+            if digest(source_files(store.task_dir(task_id) / "source")) != task["round_source_digest"]:
+                raise TestAgentError("source_changed_after_verification")
+            patch_digest = digest(changes(store, task_id))
+            expected_patch = task["repair_history"][-1]["patch_digest"] if task["repair_history"] else digest({})
+            if patch_digest != expected_patch:
+                raise TestAgentError("patch_changed_after_verification")
+            from .runner import check_scripts
+            check_scripts(store, task_plan(store, task))
+            for result in current.values():
+                for evidence in result.get("evidence_manifest", []):
+                    path = safe_path(store.task_dir(task_id), evidence["path"])
+                    if not path.is_file() or digest(path.read_bytes()) != evidence["digest"]:
+                        raise TestAgentError("evidence_changed_after_verification")
+            task.update(final_round=task["round"], phase="finalizing", final_patch_digest=patch_digest,
+                        final_review={"mode": "completed_full_scope_round", "round": task["round"],
+                                      "source_digest": task["round_source_digest"], "case_ids": sorted(expected), "at": now()})
+            store.put("task", task_id, task, db)
+            store.event(task_id, "complete_scope_round_frozen_for_final_review", task["final_review"], db)
+            return task
         task["round"] += 1
         task["final_round"] = task["round"]
         task["phase"] = "finalizing"
@@ -289,6 +369,8 @@ def application_gate(store, task):
         raise TestAgentError("application_affected_cases_not_passed")
     if digest(source_files(store.task_dir(task["id"]) / "source")) != task["round_source_digest"]:
         raise TestAgentError("source_changed_after_verification")
+    from .runner import check_scripts
+    check_scripts(store, task_plan(store, task))
     for result in final.values():
         for evidence in result.get("evidence_manifest", []):
             path = safe_path(store.task_dir(task["id"]), evidence["path"])

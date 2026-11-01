@@ -33,6 +33,21 @@ FEATURES = (
      ["history", "restore", "download", "restricted-evidence"],
      ["tests/test_free_query_history.py", "tests/test_restricted_artifacts*.py"]),
 )
+OPERATION_TITLES = {
+    "query": "业务查询", "clarification": "澄清与补充输入", "feedback": "多轮反馈",
+    "report": "结果报告", "cancel": "停止任务", "recovery": "刷新与中断恢复",
+    "catalog": "目录与筛选", "compose": "自动编排", "edit": "修改与版本对比",
+    "gaps": "能力缺口处理", "validation": "真实验证", "publish": "发布",
+    "lifecycle": "启停、回滚与删除", "create": "创建草稿", "sample": "自动选择数据",
+    "trial": "试运行", "acceptance": "正式验收", "inputs": "输入与校验",
+    "execute": "业务执行", "business-result": "业务结果核对", "evidence": "证据核对",
+    "admission": "执行资格检查", "material": "岗位材料解析", "matching": "能力匹配",
+    "connection": "连接设置", "binding": "能力绑定", "confirmation": "外部动作确认",
+    "failure": "异常与恢复", "sap": "SAP 连接配置", "runtime": "运行环境",
+    "model": "模型设置", "authentication": "登录与认证", "sdk-maintenance": "SDK 维护",
+    "month-end-profile": "月结配置", "history": "查询历史", "restore": "恢复历史结果",
+    "download": "下载结果", "restricted-evidence": "受限证据访问",
+}
 SOURCE_ROOTS = {"src", "tests", "site", "agents", "workflows", "config", "data", "scripts", "skills", "docs"}
 ROOT_FILES = {"pyproject.toml", "README.md", "SECURITY.md", ".gitignore", ".gitattributes"}
 EXCLUDED = {".git", ".local-data", ".prototype", ".codex", ".agents", ".aws", "node_modules", ".venv", "dist", ".astro", "__pycache__", ".pytest_cache", "generated"}
@@ -52,11 +67,11 @@ def source_files(root):
                             cwd=root, capture_output=True, timeout=30)
     if result.returncode:
         raise TestAgentError("repository_unavailable")
-    values = {}
+    values, verified_parents = {}, set()
     for name in sorted(set(result.stdout.decode("utf-8").split("\0")) - {""}):
         if not source_allowed(name):
             continue
-        path = safe_path(root, name)
+        path = safe_path(root, name, verified_parents)
         if path.is_file():
             if path.stat().st_size > 64 * 1024 * 1024:
                 raise TestAgentError("source_file_too_large", path=name)
@@ -89,6 +104,7 @@ def discover(root):
         if key == "role-matching":
             sources.extend(n for n in files if n.endswith("RoleMatchingAssistant.tsx"))
         features.append({"id": key, "title": title, "default": default, "operations": operations,
+                         "operation_titles": {operation: OPERATION_TITLES[operation] for operation in operations},
                          "sources": sorted(sources), "test_refs": tests, "children": children,
                          "adapter": "native-browser", "offline_adapter": "pytest", "discovery_issues": issues})
     known_pages = {x[2] for x in FEATURES} | {"index", "run"}

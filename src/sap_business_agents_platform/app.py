@@ -297,23 +297,8 @@ def create_app(
     skill_registry = SkillRegistry(
         settings.skillhub_root, settings.repository_root / "config" / "skills.json"
     )
-    embedded = embedded_provider or EmbeddedODataProvider(
-        base_url=settings.sap_base_url,
-        username=settings.sap_username,
-        password=settings.sap_password,
-        client=settings.sap_client,
-        verify_ssl=settings.sap_verify_ssl,
-        auth_type=settings.sap_auth_type,
-        timeout_seconds=settings.sap_odata_timeout_seconds,
-        max_results=settings.sap_max_results,
-        page_size=settings.sap_page_size,
-        max_concurrent_requests=settings.max_concurrent_sap_gets,
-        relationship_catalog_path=settings.repository_root / "config" / "business-relationships.json",
-        service_registry_path=settings.odata_service_registry_path,
-        catalog_seed_path=settings.catalog_seed_path,
-        curated_catalog_path=settings.repository_root / "config" / "catalog-curated-terms.json",
-        normalization_catalog_path=settings.repository_root / "config" / "sap-value-normalization.json",
-    )
+    from .read_capabilities import build_read_capabilities
+    read_capabilities = build_read_capabilities(settings, embedded_provider=embedded_provider, skill_registry=skill_registry)
     selected_provider = "embedded"
     selected_plugin_id = "embedded-sap-odata"
     codex_sdk_installed = importlib.util.find_spec("openai_codex") is not None
@@ -341,15 +326,7 @@ def create_app(
                     runtime_snapshot=runtime_snapshot, tool_broker=harness_broker),
             },
         )
-    plugin_manager = PluginManager(
-        settings.plugin_manifest_root,
-        settings.plugin_state_path,
-        official_plugin_manifests(),
-        preferred_plugins={"sap_read.v2": selected_plugin_id},
-        runtime_enabled={"embedded-sap-odata": True},
-    )
-    plugin_manager.bind_provider("embedded-sap-odata", embedded)
-    plugin_manager.bind_provider("sapskillhub", SkillhubPluginProvider(skill_registry))
+    plugin_manager = read_capabilities.manager
     plugin_manager.bind_provider(
         "codex-runtime", CodexRuntimePluginProvider(runtime_planner)
     )
@@ -362,7 +339,7 @@ def create_app(
         IntegrationStateStore(settings.database_path),
         build_integration_adapters(settings.repository_root, sdk_registry),
     )
-    sap_read = SapReadCapability(plugin_manager)
+    sap_read = read_capabilities.sap_read
     month_end_profiles = MonthEndProfileService(
         repository_root=settings.repository_root,
         data_root=settings.data_root,
@@ -370,7 +347,7 @@ def create_app(
         sap_client=settings.sap_client,
         sap_read=sap_read,
     )
-    skills = SkillCapability(plugin_manager)
+    skills = read_capabilities.skills
     agent_runtime = AgentRuntimeCapability(plugin_manager)
     business_agents = BusinessAgentCapability(plugin_manager)
     workflows = WorkflowRepository(
@@ -466,7 +443,7 @@ def create_app(
         if provider_id == "workbuddy" and supervisor and (supervisor.active or supervisor.pending()):
             result.append({"code": "runtime_authentication_business_active"})
         return result
-    authentication = RuntimeAuthenticationService(settings.data_root / "sdk-runtimes", adapters,
+    authentication = RuntimeAuthenticationService(settings.sdk_runtime_state_path.parent, adapters,
         busy=authentication_busy, changed=getattr(sdk_registry, "apply_authentication_state", None))
     owned_supervisor = getattr(getattr(sdk_registry, 'workbuddy', None), 'supervisor', None)
     if owned_supervisor is not None:

@@ -50,10 +50,17 @@ def test_http_health_and_existing_run_reads_remain_responsive_during_admission(t
 
 @pytest.mark.parametrize("provider", ["codex", "workbuddy"])
 @pytest.mark.parametrize("allowed", [True, False])
-def test_router_checks_selected_provider_without_list_or_display_cache(provider, allowed):
-    manager = SDKManager.__new__(SDKManager)
+def test_router_checks_selected_provider_without_list_or_display_cache(tmp_path, provider, allowed):
+    # Reuse the existing deterministic SDK adapters while keeping real manager
+    # initialization and prepare_runtime_snapshot's consistency checks active.
+    from tests.test_sdk_manager import FakeAdapter, FakeRuntimeProbe, _write_runtime_registry
+    from sap_business_agents_platform.sdk_manager import SDKManagerError
+    registry = tmp_path / "sdks.json"
+    _write_runtime_registry(registry)
+    manager = SDKManager(registry, tmp_path, adapters={"python": FakeAdapter()},
+                         runtime_probes={"codex": FakeRuntimeProbe()})
     calls = []
-    definition = SimpleNamespace(provider_id=provider)
+    definition = manager._get_provider(provider)
     manager._get_provider = lambda name: definition if name == provider else pytest.fail("Other provider accessed")
     def full_gate(value, **options):
         assert options == ({"admission": True} if value.provider_id == "workbuddy" else {})
@@ -61,10 +68,19 @@ def test_router_checks_selected_provider_without_list_or_display_cache(provider,
         return {"selectable": allowed, "blockers": [] if allowed else ["authentication_not_checked"]}
     manager._snapshot = full_gate
     manager.list = lambda: pytest.fail("Cross-provider traversal")
-    manager.runtime_snapshot = lambda selected: {
-        "provider_id": selected, "model": "unchanged", "reasoning_effort": "max" if selected == "codex" else None,
-        "configuration_digest": "unchanged", "runtime_configuration_revision": 1,
-    }
+    def runtime_snapshot(selected):
+        # The Codex atomic snapshot owns its full gate. RuntimeRouter already
+        # performed the WorkBuddy gate before asking for its bound snapshot.
+        if selected == "codex":
+            gate = manager.admission_status(selected)
+            if not gate["selectable"]:
+                raise SDKManagerError("Offline admission rejection", code="runtime_not_selectable",
+                                      detail={"blockers": gate["blockers"]})
+        return {"provider_id": selected, "model": "unchanged",
+                "reasoning_effort": "max" if selected == "codex" else None,
+                "version": "1.0.0", "cli_version": "1.0.0",
+                "configuration_digest": "unchanged", "runtime_configuration_revision": 1}
+    manager.runtime_snapshot = runtime_snapshot
     manager.authentication_service = None
     router = RuntimeRouter(manager, {provider: object()})
     if allowed:

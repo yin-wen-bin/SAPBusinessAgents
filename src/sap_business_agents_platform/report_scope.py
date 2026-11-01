@@ -103,9 +103,18 @@ def assess_coverage(broker, run_id, presentation, prior_issues=()):
         if not contexts:
             from .source_semantics import assess, public_assessment
             from .harness import _extract_rows
-            contexts = [public_assessment(assess(plan, _extract_rows(raw),
+            assessment = assess(plan, _extract_rows(raw),
                 broker.store.get_harness_state(run_id)['source_semantics_catalog'],
-                source_complete=output.get('source_complete') is True))]
+                source_complete=output.get('source_complete') is True)
+            if assessment is not None:
+                contexts = [public_assessment(assessment)]
+            else:
+                from .technical_record_proof import technical_profile
+                from .runtime_money import monetary_request
+                # Literal record facts need live keys and exact question scope.
+                # They do not establish ledger categories or monetary semantics.
+                if answer["categories"] or monetary_request(run.query) or technical_profile(broker, run_id, c) is None:
+                    issues.append({"code": "source_business_completeness_unproven", "evidence_ref": ref})
         if any(ctx.get("business_complete") is not True or ctx.get("issues") for ctx in contexts):
             issues.append({"code": "source_business_completeness_unproven", "evidence_ref": ref})
         if answer["categories"] and any(set(ctx.get("record_kind_counts", {})) and any(

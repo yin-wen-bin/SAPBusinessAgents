@@ -1,6 +1,19 @@
 """SDK-free Harness admission and platform-owned conversation context."""
 from __future__ import annotations
 import time
+import asyncio
+
+
+async def _source_io(action, *args, **kwargs):
+    """Keep source capture off the event loop and drain its owner on cancel."""
+    work = asyncio.create_task(asyncio.to_thread(action, *args, **kwargs))
+    try:
+        return await asyncio.shield(work)
+    except asyncio.CancelledError:
+        try:
+            await asyncio.shield(work)
+        finally:
+            raise
 
 
 def preflight(settings, state, *, thread_id=None, started=None):
@@ -240,7 +253,7 @@ async def _run(
             snapshot = copy.deepcopy(await driver_binding(driver, run_id, state, model, reasoning_effort))
         if engineering is not None:
             with measure('workspace'):
-                engineering.prepare(None, current_source=True)
+                await _source_io(engineering.prepare, None, current_source=True)
             workspace = engineering.source
             snapshot.update({"workspace_id": engineering.root.name,
                              "base_commit": engineering.base_commit,
@@ -258,10 +271,14 @@ async def _run(
     operation = "acceptance_baseline" if direct_baseline else "acceptance_free_query" if state.get("acceptance_spec") else "free_query"
     budget = self.broker.budget_snapshot(run_id)
     remaining = max(0, budget["hard_limit_seconds"] - self.broker._elapsed_seconds(run_id))
+    bridge_path, bridge_instructions = None, ''
+    if full_access and driver.provider_id == 'codex':
+        from .runtime_tool_bridge import create as create_tool_bridge
+        bridge_path, bridge_instructions = create_tool_bridge(self.settings, self.broker, run_id, capability)
     request = RuntimeRequest(driver.provider_id, operation, "harness", {"provider_id": driver.provider_id, **snapshot},
         turn_prompt(query, continuing=resuming_thread or turn_count > 1, acceptance_spec=state.get("acceptance_spec"), version=protocol),
         terminal_schema(state.get("acceptance_spec"), version=protocol), cwd=str(workspace),
-        instructions=_developer_instructions(full_access=full_access, budget=budget),
+        instructions=_developer_instructions(full_access=full_access, budget=budget) + bridge_instructions,
         permissions={"full_access": full_access, "acceptance_direct_baseline": direct_baseline},
         session=RuntimeSession(driver.provider_id, thread_id) if thread_id else None,
         deadline=time.monotonic() + remaining, tool_session={"run_id": run_id, "capability": capability},
@@ -588,10 +605,12 @@ async def _run(
                 self.store.append_event(run_id, "terminal_handoff_cleanup_confirmed" if complete else "terminal_handoff_cleanup_pending",
                     {"provider_id": driver.provider_id, "cleanup_complete": complete})
             self.broker.close_session(run_id)
+            if bridge_path is not None:
+                bridge_path.unlink(missing_ok=True)
         from .runtime_changesets import RuntimeChangeSets
         try:
             change_set = (
-                RuntimeChangeSets(self.settings.data_root / "runtime-change-sets").create(
+                await _source_io(RuntimeChangeSets(self.settings.data_root / "runtime-change-sets").create,
                     engineering, source_id=run_id
                 )
                 if engineering is not None

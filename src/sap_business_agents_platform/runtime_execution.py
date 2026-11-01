@@ -34,11 +34,26 @@ async def owned_client(client: Any, *, cleanup_timeout: float | None = None, cle
     from .runtime_contract import remaining_budget, cleanup_scope, cleanup_deadline
     start = asyncio.create_task(client.__aenter__())
     primary = None
+    process_job = None
     try:
         try:
             active = await asyncio.wait_for(asyncio.shield(start), timeout=remaining_budget(30))
         except TimeoutError:
             raise RuntimeExecutionError("runtime_sdk_initialization_timeout") from None
+        native_process = getattr(getattr(getattr(client, "_client", None), "_sync", None), "_proc", None)
+        if os.name == "nt" and isinstance(native_process, subprocess.Popen) and native_process.poll() is None:
+            # Attach before any model turn can spawn tools. Reuse the platform's
+            # native ownership primitive instead of a slow external taskkill.
+            from .workbuddy_job import WindowsJob
+            job = WindowsJob()
+            try:
+                job.attach(native_process.pid)
+            except BaseException:
+                job.close()
+                raise RuntimeExecutionError("runtime_process_ownership_unavailable") from None
+            process_job = job
+            if cleanup_state is not None:
+                cleanup_state["process_ownership"] = "windows_job"
         yield active
     except BaseException as exc:
         primary = exc
@@ -48,13 +63,19 @@ async def owned_client(client: Any, *, cleanup_timeout: float | None = None, cle
             cleanup_state.update({"started": True, "complete": False})
         async def cleanup():
             proc = getattr(getattr(getattr(client, "_client", None), "_sync", None), "_proc", None)
-            if proc is not None and proc.poll() is None:
-                if os.name == "nt":
-                    killer = await asyncio.create_subprocess_exec("taskkill", "/PID", str(proc.pid), "/T", "/F",
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
-                    await asyncio.wait_for(killer.wait(), timeout=8)
-                else:
-                    proc.kill()
+            tree_error = None
+            try:
+                if process_job is not None:
+                    process_job.terminate()
+                elif proc is not None and proc.poll() is None:
+                    if os.name == "nt":
+                        killer = await asyncio.create_subprocess_exec("taskkill", "/PID", str(proc.pid), "/T", "/F",
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=subprocess.CREATE_NO_WINDOW)
+                        await asyncio.wait_for(killer.wait(), timeout=8)
+                    else:
+                        proc.kill()
+            except Exception as error:
+                tree_error = error
             try:
                 await asyncio.wait_for(asyncio.shield(start), timeout=2)
             except Exception:
@@ -64,35 +85,48 @@ async def owned_client(client: Any, *, cleanup_timeout: float | None = None, cle
                 await close()
             else:
                 await client.__aexit__(None, None, None)
+            if tree_error is not None:
+                raise tree_error
+            if process_job is not None:
+                while not process_job.empty() and time.monotonic() < cleanup_deadline():
+                    await asyncio.sleep(.01)
+                if not process_job.empty():
+                    raise RuntimeExecutionError("runtime_cleanup_incomplete")
+                if cleanup_state is not None:
+                    cleanup_state["process_tree_empty"] = True
             if not start.done() or (proc is not None and proc.poll() is None):
                 raise RuntimeExecutionError("runtime_cleanup_incomplete")
             if cleanup_state is not None:
                 cleanup_state["complete"] = True
-        with cleanup_scope():
-            task = asyncio.create_task(cleanup())
-            limit = max(0, cleanup_deadline() - time.monotonic())
-            if cleanup_timeout is not None:
-                limit = min(limit, cleanup_timeout)
-            done, pending = await asyncio.wait({task}, timeout=limit)
-            failure = RuntimeExecutionError("runtime_cleanup_incomplete")
-            if pending:
-                task.cancel()
-                task.add_done_callback(lambda finished: None if finished.cancelled() else finished.exception())
-            else:
-                try:
-                    task.result()
-                except BaseException:
-                    pass
+        try:
+            with cleanup_scope():
+                task = asyncio.create_task(cleanup())
+                limit = max(0, cleanup_deadline() - time.monotonic())
+                if cleanup_timeout is not None:
+                    limit = min(limit, cleanup_timeout)
+                done, pending = await asyncio.wait({task}, timeout=limit)
+                failure = RuntimeExecutionError("runtime_cleanup_incomplete")
+                if pending:
+                    task.cancel()
+                    task.add_done_callback(lambda finished: None if finished.cancelled() else finished.exception())
                 else:
-                    failure = None
-            if failure:
-                if cleanup_state is not None:
-                    cleanup_state["failure_code"] = failure.code
-                if primary is None:
-                    raise failure
-                detail = dict(getattr(primary, "detail", {}) or {})
-                detail["cleanup_failure_code"] = failure.code
-                primary.detail = detail
+                    try:
+                        task.result()
+                    except BaseException:
+                        pass
+                    else:
+                        failure = None
+                if failure:
+                    if cleanup_state is not None:
+                        cleanup_state["failure_code"] = failure.code
+                    if primary is None:
+                        raise failure
+                    detail = dict(getattr(primary, "detail", {}) or {})
+                    detail["cleanup_failure_code"] = failure.code
+                    primary.detail = detail
+        finally:
+            if process_job is not None:
+                process_job.close()
 
 
 def sandbox() -> Any:

@@ -15,6 +15,7 @@ class Settings:
     repository_root: Path = REPOSITORY_ROOT
     data_root: Path = REPOSITORY_ROOT / ".local-data"
     draft_root: Path = REPOSITORY_ROOT / ".prototype" / "authoring"
+    runtime_state_root: Path | None = None
     sap_base_url: str = ""
     sap_username: str = ""
     sap_password: str = ""
@@ -115,7 +116,7 @@ class Settings:
 
     @property
     def sdk_runtime_state_path(self) -> Path:
-        return self.data_root / "sdk-runtimes" / "default.json"
+        return (self.runtime_state_root or self.data_root / "sdk-runtimes") / "default.json"
 
     @property
     def odata_service_registry_path(self) -> Path:
@@ -144,6 +145,7 @@ class Settings:
         return cls(
             repository_root=root,
             data_root=data_root,
+            runtime_state_root=Path(os.environ["SAPBA_RUNTIME_STATE_ROOT"]).resolve() if os.getenv("SAPBA_RUNTIME_STATE_ROOT") else None,
             draft_root=draft_root,
             sap_base_url=(os.getenv("SAP_ODATA_BASE_URL") or os.getenv("SAP_BASE_URL", "")).rstrip("/"),
             sap_username=os.getenv("SAP_USERNAME", ""),

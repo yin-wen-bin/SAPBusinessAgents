@@ -169,10 +169,10 @@ def test_fixture_lifecycle_writes_do_not_change_repair_candidate(repository):
 
 def test_no_silent_replay_after_native_interruption(repository):
     store, plan, task = start_task(repository)
-    first = run_case(store, task["id"], "case-0")
-    assert first["status"] == "awaiting_native_execution"
+    first = state.claim(store, task["id"], "case-0")
+    assert first["ticket"]
     with pytest.raises(TestAgentError, match="case_already_running"):
-        run_case(store, task["id"], "case-0")
+        state.claim(store, task["id"], "case-0")
     with pytest.raises(TestAgentError, match="owned_cases_require_reconciliation"):
         state.resume(store, task["id"])
     task = state.resume(store, task["id"], ["case-0"])
@@ -218,7 +218,7 @@ def test_apply_failure_rolls_back_already_written_files(repository, monkeypatch)
     store, task = verify_native_fix(repository)
     original = workspace.atomic_bytes
     def fail_second(path, data):
-        if path == repository / "src/b.py" and data == b"VALUE = 3\n":
+        if path == repository / "src/b.py" and data.replace(b"\r\n", b"\n") == b"VALUE = 3\n":
             raise OSError("simulated disk failure")
         return original(path, data)
     monkeypatch.setattr(workspace, "atomic_bytes", fail_second)
@@ -363,6 +363,7 @@ def test_real_subprocess_fault_batch_repair_and_final_review(repository):
         path = repository / "tests" / f"test_{name}.py"
         path.write_text(f"from {name} import VALUE\ndef test_value():\n    assert VALUE == 3\n", encoding="utf-8")
         definitions[index]["test_refs"] = [path.relative_to(repository).as_posix()]
+        definitions[index]["timeout_seconds"] = 20
     store, plan, task = start_task(repository, definitions)
     first = run_case(store, task["id"], "case-0")
     assert first["status"] == "failed"
@@ -440,7 +441,7 @@ def test_live_boolean_cannot_fake_a_comparison_and_data_drift_is_inconclusive(re
     store, plan, task = start_task(repository, live_cases())
     baseline = asyncio.run(read(store, task["id"], "case-0", "baseline", FakeReadProvider()))
     owned = state.claim(store, task["id"], "case-0")
-    path = "evidence/observed.json"
+    path = "evidence/0/case-0/execution/observation.json"
     observed = {"rows": [{"PurchaseOrder": "4500000001"}], "scope": live_cases()[0]["baseline"]["plan"],
                 "source_complete": True, "source_truncated": False, "captured_at": now()}
     write_json(store.task_dir(task["id"]) / path, observed)
@@ -477,3 +478,226 @@ def test_invalid_live_recipe_never_contacts_provider(repository):
     with pytest.raises(Exception):
         asyncio.run(read(store, task["id"], "case-0", "baseline", provider))
     assert provider.calls == 0
+
+
+def test_operation_and_object_selection_are_enforced(repository):
+    store = Store(repository)
+    definition = cases(1)
+    with pytest.raises(TestAgentError, match="case_outside_operation_selection"):
+        prepare(store, ["free-query/feedback"], definition)
+    definition[0]["operation"] = "feedback"
+    plan = prepare(store, ["free-query/feedback"], definition)
+    assert plan["operation_selection"] == {"free-query": ["feedback"]}
+    agent = repository / "agents/MM/example/agent.json"
+    agent.parent.mkdir(parents=True)
+    write_json(agent, {"slug": "example"})
+    definition[0].update(feature="fixed-agents", operation="execute", object_id="example")
+    plan = prepare(store, ["fixed-agents@example"], definition)
+    assert plan["object_selection"] == {"fixed-agents": ["example"]}
+
+
+def test_environment_diagnosis_does_not_edit_away_a_blocker(repository):
+    from sap_business_agents_test_agent.report import report
+    store, plan, task = start_task(repository, cases(1))
+    drain(store, task, {"case-0": ("failed", "authentication_failed")})
+    state.diagnose(store, task["id"], [{"root_cause_id": "auth", "case_ids": ["case-0"],
+        "category": "environment", "reason": "The configured account is unavailable."}])
+    assert report(store, task["id"])["counts"] == {"blocked": 1}
+    assert state.failure_groups(store, store.get("task", task["id"]))[0]["automatic_repair"] is False
+    with pytest.raises(TestAgentError, match="no_repairable_failures"):
+        state.begin_repair(store, task["id"])
+
+
+class FakeSkillRegistry:
+    def __init__(self, approved=True):
+        self.approved, self.calls = approved, 0
+
+    def get(self, skill_id):
+        return {"read_only": self.approved, "validated": self.approved}
+
+    def validate_input(self, skill_id, payload):
+        assert "url" not in payload
+
+    async def execute(self, skill_id, payload):
+        self.calls += 1
+        return {"status": "complete", "rows": [{"CompanyCode": "1710"}], "read_only": True,
+                "completeness": {"source_complete": True, "paging_complete": True}}
+
+
+def test_approved_skill_evidence_reuses_registry_without_claiming_get_transport(repository):
+    from sap_business_agents_test_agent.sap import read
+    definitions = live_cases()
+    definitions[0]["baseline"] = {"skill_id": "sap-adt-table-export", "input": {"max_rows": 10}}
+    registry = FakeSkillRegistry()
+    store, plan, task = start_task(repository, definitions)
+    receipt = asyncio.run(read(store, task["id"], "case-0", "baseline", skill_registry=registry))
+    assert receipt["status"] == "completed"
+    assert registry.calls == 1
+    body = read_json(store.task_dir(task["id"]) / receipt["artifact"])
+    assert body["method"] == "approved_skill"
+    assert body["semantic_read_only"] is True
+    assert body["source_complete"] is True
+    assert body["rows"] == [{"CompanyCode": "1710"}]
+
+
+def test_unapproved_skill_cannot_execute_and_adt_sample_is_bounded(repository):
+    from sap_business_agents_test_agent.sap import read
+    definitions = live_cases()
+    definitions[0]["baseline"] = {"skill_id": "sap-adt-table-export", "input": {"max_rows": 10}}
+    store, plan, task = start_task(repository, definitions)
+    registry = FakeSkillRegistry(approved=False)
+    with pytest.raises(TestAgentError, match="skill_not_approved"):
+        asyncio.run(read(store, task["id"], "case-0", "baseline", skill_registry=registry))
+    assert registry.calls == 0
+    definitions[0]["sample"] = {"skill_id": "sap-adt-table-export", "input": {"max_rows": 101}}
+    plan = prepare(store, ["free-query"], definitions)
+    task = state.start(store, plan["id"], plan["digest"])
+    registry = FakeSkillRegistry()
+    with pytest.raises(TestAgentError, match="skill_row_budget_invalid"):
+        asyncio.run(read(store, task["id"], "case-0", "sample", skill_registry=registry))
+    assert registry.calls == 0
+
+
+def test_generated_script_integrity_is_checked_before_execution(repository):
+    store, plan, task = start_task(repository)
+    path = store.root / "suites" / plan["id"] / "browser.mjs"
+    path.write_text("// bypass assertions", encoding="utf-8")
+    with pytest.raises(TestAgentError, match="generated_script_changed"):
+        run_case(store, task["id"], "case-0")
+    assert store.get("task", task["id"])["claims"] == {}
+
+
+def test_frozen_regression_cannot_be_rewritten_to_get_pass(repository):
+    definitions = cases(1, kind="pytest", mode="offline")
+    definitions[0]["test_refs"] = ["tests/test_free_query_lifecycle.py"]
+    store, plan, task = start_task(repository, definitions)
+    drain(store, task, {"case-0": ("failed", "original_failure")})
+    state.begin_repair(store, task["id"])
+    path = Path(task["workspace"]["source"]) / "tests/test_free_query_lifecycle.py"
+    path.write_text("def test_bypassed():\n    pass\n", encoding="utf-8")
+    with pytest.raises(TestAgentError, match="frozen_regression_test_modified"):
+        state.verify_repair(store, task["id"])
+
+
+def test_locator_fix_is_audited_without_changing_oracle_or_original_plan(repository):
+    from sap_business_agents_test_agent.plans import revise_locators
+    definitions = cases(1, kind="browser")
+    definitions[0]["actions"] = [{"type": "expect_text", "selector": "#old", "text": "correct result"}]
+    store, plan, task = start_task(repository, definitions)
+    drain(store, task, {"case-0": ("failed", "browser_locator_missing")})
+    state.begin_repair(store, task["id"])
+    evidence = state.all_results(store.get("task", task["id"]))["case-0"]["evidence"]
+    with pytest.raises(TestAgentError, match="locator_revision_changes_oracle"):
+        revise_locators(store, task["id"], [{"case_id": "case-0", "action_index": 0, "locator": {"text": "weaker assertion"}}], "observed selector change", evidence)
+    corrections = [{"case_id": "case-0", "action_index": 0, "locator": {"selector": "#new"}}]
+    corrected = revise_locators(store, task["id"], corrections, "observed selector change", evidence)
+    assert corrected["id"] != plan["id"]
+    assert corrected["cases"][0]["actions"][0]["text"] == "correct result"
+    assert store.get("plan", plan["id"])["cases"][0]["actions"][0]["selector"] == "#old"
+    assert revise_locators(store, task["id"], corrections, "observed selector change", evidence)["id"] == corrected["id"]
+    task = state.verify_repair(store, task["id"])
+    assert task["queue"] == ["case-0"]
+
+
+def test_new_intent_runs_fresh_after_completion_but_active_and_retry_intents_coalesce(repository):
+    from sap_business_agents_test_agent.cards import render
+    store, plan, task = start_task(repository, cases(1))
+    first_card = render(store, repository / ".local-data/first.html", plan_id=plan["id"])["payload"]
+    second_card = render(store, repository / ".local-data/second.html", plan_id=plan["id"])["payload"]
+    assert first_card["request_id"] != second_card["request_id"]
+    assert state.start(store, plan["id"], plan["digest"], first_card["request_id"])["id"] == task["id"]
+    drain(store, task)
+    state.begin_final(store, task["id"])
+    drain(store, task)
+    state.complete(store, task["id"])
+    assert state.start(store, plan["id"], plan["digest"], first_card["request_id"])["id"] == task["id"]
+    fresh = state.start(store, plan["id"], plan["digest"], second_card["request_id"])
+    assert fresh["id"] != task["id"]
+    assert fresh["results"] == {"0": {}}
+    assert state.start(store, plan["id"], plan["digest"], second_card["request_id"])["id"] == fresh["id"]
+
+
+def test_cancelling_task_interrupts_owned_sap_read(repository):
+    from sap_business_agents_test_agent.sap import read
+    store, plan, task = start_task(repository, live_cases())
+    class SlowProvider(FakeReadProvider):
+        def __init__(self):
+            super().__init__()
+            self.started, self.stopped = False, False
+        async def execute_plan(self, plan, query=""):
+            self.started = True
+            try:
+                await asyncio.sleep(60)
+            finally:
+                self.stopped = True
+    async def scenario():
+        provider = SlowProvider()
+        operation = asyncio.create_task(read(store, task["id"], "case-0", "baseline", provider))
+        while not provider.started:
+            await asyncio.sleep(0)
+        state.cancel(store, task["id"])
+        receipt = await asyncio.wait_for(operation, timeout=2)
+        assert receipt["status"] == "cancelled"
+        assert provider.stopped is True
+    asyncio.run(scenario())
+
+
+def test_skill_registry_cancellation_cleans_up_only_its_owned_subprocess(repository, monkeypatch):
+    from sap_business_agents_platform.skills import SkillRegistry
+    import sap_business_agents_platform.skills as skills_module
+    registry = SkillRegistry(repository / "skillhub", repository / "config/skills.json")
+    monkeypatch.setattr(registry, "get", lambda _: {"available": True, "read_only": True, "validated": True,
+                                                  "entrypoint": "read-only-fixture.py", "timeout": 30})
+    monkeypatch.setattr(registry, "validate_input", lambda *_: None)
+    class OwnedProcess:
+        returncode = None
+        killed = False
+        def __init__(self):
+            self.started = False
+        async def communicate(self):
+            self.started = True
+            await asyncio.sleep(60)
+        def kill(self):
+            self.killed = True
+            self.returncode = -1
+        async def wait(self):
+            return self.returncode
+    process = OwnedProcess()
+    async def create(*args, **kwargs):
+        return process
+    monkeypatch.setattr(skills_module.asyncio, "create_subprocess_exec", create)
+    async def scenario():
+        operation = asyncio.create_task(registry.execute("fixture-skill", {}))
+        while not process.started:
+            await asyncio.sleep(0)
+        operation.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await operation
+        assert process.killed is True
+    asyncio.run(scenario())
+
+
+def test_native_ui_execution_without_verified_target_is_blocked(repository):
+    store, plan, task = start_task(repository, cases(1))
+    result = run_case(store, task["id"], "case-0")
+    assert result["status"] == "blocked"
+    assert result["code"] == "isolated_target_not_bound"
+
+
+def test_unrelated_environment_blocker_does_not_prevent_verified_product_fix(repository):
+    store, plan, task = start_task(repository, cases(2))
+    drain(store, task, {"case-0": ("failed", "product_fault"), "case-1": ("failed", "account_unavailable")})
+    state.diagnose(store, task["id"], [
+        {"root_cause_id": "product", "case_ids": ["case-0"], "category": "product", "reason": "Observed product mismatch."},
+        {"root_cause_id": "account", "case_ids": ["case-1"], "category": "environment", "reason": "Independent account unavailable."}])
+    state.begin_repair(store, task["id"])
+    (Path(task["workspace"]["source"]) / "src/a.py").write_text("VALUE = 3\n", encoding="utf-8")
+    verified = state.verify_repair(store, task["id"])
+    assert verified["queue"] == ["case-0"]
+    drain(store, task)
+    state.begin_final(store, task["id"])
+    drain(store, task, {"case-1": ("blocked", "account_unavailable")})
+    state.complete(store, task["id"])
+    assert workspace.apply_patch(store, task["id"])["status"] == "applied"
+    from sap_business_agents_test_agent.report import report
+    assert report(store, task["id"])["counts"] == {"passed": 1, "blocked": 1}

@@ -5,6 +5,8 @@ import argparse
 import asyncio
 import json
 import sys
+import threading
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
@@ -25,7 +27,7 @@ TOOLS = [
     {"name": "test_start", "description": "Start one user-requested test plan in an isolated working-tree snapshot. Retry identical request IDs safely.",
      "inputSchema": schema({"plan_id": STRING, "plan_digest": STRING, "request_id": STRING}, ("plan_id", "plan_digest", "request_id"))},
     {"name": "test_status", "description": "Read persisted task status and failure groups without replaying execution.", "inputSchema": schema({"task_id": STRING}, ("task_id",)), "annotations": {"readOnlyHint": True}},
-    {"name": "test_sap_read", "description": "Execute a frozen sample/baseline/anchor recipe through the registered GET-only SAP Provider. Task must already be started. No arbitrary URLs or credentials.",
+    {"name": "test_sap_read", "description": "Execute a frozen sample/baseline/anchor recipe through registered GET-only SAP OData or approved read-only Skills. Task must already be started. No arbitrary URLs or credentials.",
      "inputSchema": schema({"task_id": STRING, "case_id": STRING, "role": {"enum": ["sample", "baseline", "anchor"]}}, ("task_id", "case_id", "role")), "annotations": {"readOnlyHint": True}},
     {"name": "test_cancel", "description": "Stop future dispatch and request cancellation of only this test task's owned execution.",
      "inputSchema": schema({"task_id": STRING}, ("task_id",))},
@@ -88,16 +90,26 @@ def main():
     parser.add_argument("--repository", required=True, type=Path)
     args = parser.parse_args()
     store = Store(args.repository)
-    for line in sys.stdin:
-        try:
-            request = json.loads(line)
-            if not isinstance(request, dict):
-                raise ValueError()
-            value = response(store, request)
-        except (ValueError, TypeError):
-            value = {"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}
+    output_lock = threading.Lock()
+    def send(value):
         if value is not None:
-            print(json.dumps(value, ensure_ascii=False), flush=True)
+            with output_lock:
+                print(json.dumps(value, ensure_ascii=False), flush=True)
+    def dispatch(request):
+        send(response(store, request))
+    # A long SAP read must not block status or the explicit cancellation tool.
+    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="sapba-test-tool") as workers:
+        for line in sys.stdin:
+            try:
+                request = json.loads(line)
+                if not isinstance(request, dict):
+                    raise ValueError()
+                if request.get("method") == "tools/call":
+                    workers.submit(dispatch, request)
+                else:
+                    dispatch(request)
+            except (ValueError, TypeError):
+                send({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
 
 
 if __name__ == "__main__":

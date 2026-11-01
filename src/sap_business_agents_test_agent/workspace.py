@@ -1,8 +1,7 @@
 """Working-tree snapshots and conflict-checked, recoverable patch application."""
 from __future__ import annotations
 
-import os
-import shutil
+import socket
 import subprocess
 from pathlib import Path
 
@@ -164,24 +163,59 @@ def recover_application(store, task_id):
         return task["application"]
 
 
-def dependency_environment(store, task_id):
+def dependency_environment(store, task_id, reuse_platform=False):
     """Return exact commands for native Codex to provision the isolated target."""
     source = prepare_target(store, task_id)
     python = store.repository / ".venv" / "Scripts" / "python.exe"
     if not python.exists():
         import sys
         python = Path(sys.executable)
-    return {"cwd": str(source), "python": str(python), "environment": {
+    with store.transaction() as db:
+        task = store.get("task", task_id, db)
+        configuration = task.get("launch_configuration", {})
+        if configuration.get("round") != task["round"]:
+            with socket.socket() as api_socket, socket.socket() as site_socket:
+                api_socket.bind(("127.0.0.1", 0))
+                site_socket.bind(("127.0.0.1", 0))
+                configuration = {"round": task["round"], "api_port": api_socket.getsockname()[1], "site_port": site_socket.getsockname()[1]}
+            task["launch_configuration"] = configuration
+            store.put("task", task_id, task, db)
+    api_url = f"http://127.0.0.1:{configuration['api_port']}"
+    site_url = f"http://127.0.0.1:{configuration['site_port']}"
+    result = {"cwd": str(source), "python": str(python), "environment": {
         "PYTHONPATH": str(source / "src"), "SAPBA_DATA_ROOT": str(source / ".local-data"),
         "SAPBA_DRAFT_ROOT": str(source / ".prototype" / "authoring"),
         "SAPBA_SAP_ENV_FILE": str(store.repository / ".env"),
-    }, "api_command": [str(python), "-m", "sap_business_agents_platform.cli", "--port", "<free-loopback-port>"],
-        "site_install": ["npm", "ci", "--ignore-scripts"], "site_start": ["npm", "run", "dev", "--", "--port", "<free-loopback-port>"],
+        "SAPBA_INTERNAL_API_URL": api_url, "SAPBA_LOCAL_UI_ORIGINS": site_url,
+        "PUBLIC_SAPBA_API_URL": api_url, "PUBLIC_SITE_ORIGIN": site_url, "PUBLIC_SITE_BASE": "/", "PYTHONUTF8": "1",
+    }, "site_url": site_url, "api_url": api_url,
+        "api_command": [str(python), "-m", "sap_business_agents_platform.cli", "--port", str(configuration["api_port"])],
+        "site_install": ["npm", "ci", "--ignore-scripts"], "site_start": ["npm", "run", "dev", "--", "--port", str(configuration["site_port"])],
         "site_cwd": str(source / "site"),
         "notes": ["Bind SAPBA_INTERNAL_API_URL and SAPBA_LOCAL_UI_ORIGINS to the isolated ports.",
                   "Set PUBLIC_SAPBA_API_URL to the isolated API and PUBLIC_SITE_BASE=/ before building the target site.",
                   "Reuse approved runtime authentication/configuration without copying credentials into source or reports.",
                   "Use native tools to start and stop only the processes owned by this test task."]}
+    if reuse_platform:
+        from .state import task_plan
+        task = store.get("task", task_id)
+        if task_plan(store, task)["selected"] != ["free-query"]:
+            raise TestAgentError("platform_reuse_requires_query_only_scope")
+        from sap_business_agents_platform.config import Settings
+        settings = Settings.from_env(store.repository)
+        result.update(platform_configuration_root=str(store.repository),
+            runtime_state_reference=str(settings.sdk_runtime_state_path.parent),
+            source_digest=task["round_source_digest"], native_identity=True)
+        result["environment"]["SAPBA_RUNTIME_STATE_ROOT"] = result["runtime_state_reference"]
+        directory = store.task_dir(task_id) / "launch" / str(task["round"])
+        configuration = directory / "platform.json"
+        bootstrap = directory / "native-platform.py"
+        write_json(configuration, result)
+        atomic_bytes(bootstrap, (Path(__file__).parent / "assets/native_platform.py").read_bytes())
+        result["api_command"] = [str(python), str(bootstrap), str(configuration)]
+        result["notes"] += ["Query artifacts are isolated; SAP configuration and Runtime state are referenced in place.",
+                            "Use bind-target --native-identity; all real Runtime admission gates remain enabled."]
+    return result
 
 
 def prepare_target(store, task_id):

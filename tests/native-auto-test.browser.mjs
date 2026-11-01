@@ -3,7 +3,6 @@ import assert from 'node:assert/strict';
 import {readFile,writeFile,mkdir} from 'node:fs/promises';
 import {createRequire} from 'node:module';
 import {createServer} from 'node:http';
-import {spawnSync} from 'node:child_process';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 
@@ -17,6 +16,7 @@ const features = [
   ['fixed-agents','固定业务 Agent',false],['role-matching','岗位匹配',false],['plugins','插件与连接',false],
   ['settings','系统配置',false],['history','历史与证据',false]
 ].map(([id,title,value])=>({id,title,default:value,operations:['query']}));
+features[0].operations.push('feedback');
 const make = payload => template.replaceAll('__ROOT_ID__','native-test-card').replace('__PAYLOAD__',JSON.stringify(payload));
 const browser = await chromium.launch({channel:process.env.SAPBA_BROWSER_CHANNEL || 'msedge',headless:true});
 const errors = [];
@@ -32,16 +32,21 @@ try {
         setWidgetState:async value=>window.saved.push(value)};
     });
     await page.setContent('<style>body{font-family:system-ui;margin:8px}.viz-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px}.viz-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:16px}.form-check{display:flex;gap:8px}textarea{width:95%}button{padding:8px}</style>'+make({stage:'select',inventory_digest:'fresh',features,repository}));
-    assert.equal(await page.locator('input[type=checkbox]').count(),8);
-    assert.equal(await page.locator('input:checked').count(),3);
+    assert.equal(await page.locator('input[data-feature-check]').count(),8);
+    assert.equal(await page.locator('input[data-feature-check]:checked').count(),3);
     assert.equal(await page.evaluate(()=>window.received.length),0);
     await page.getByLabel('固定业务 Agent',{exact:true}).check();
     assert.equal(await page.evaluate(()=>window.saved.at(-1).modelContent.selected.length),4);
     assert.equal(await page.evaluate(()=>window.received.length),0);
+    await page.locator('[data-choices] > div').first().locator('summary').click();
+    await page.getByLabel('feedback',{exact:true}).uncheck();
     await page.getByRole('button',{name:'生成测试脚本',exact:true}).click();
     const message = await page.evaluate(()=>window.received[0].prompt);
     assert.match(message,/\$sapba-auto-test prepare/);
     assert.equal(JSON.parse(message.split('\n')[1]).selected.length,4);
+    assert.equal(JSON.parse(message.split('\n')[1]).selected.includes('free-query/query'),true);
+    await page.getByRole('button',{name:'生成测试脚本',exact:true}).dispatchEvent('click');
+    assert.equal(await page.evaluate(()=>window.received.length),1);
     assert.equal(await page.getByRole('button',{name:'生成测试脚本'}).isDisabled(),true);
     assert.equal(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),true);
     await page.screenshot({path:path.join(output,`selection-${width}.png`),fullPage:true});
@@ -53,9 +58,10 @@ try {
   assert.equal(await page.locator('textarea').isVisible(),true);
   assert.match(await page.locator('textarea').inputValue(),/prepare/);
   await page.evaluate(()=>{window.openai={sendFollowUpMessage:async value=>{window.sent=value}}});
-  await page.setContent(make({stage:'start',plan_id:'p',plan_digest:'d',cases:[{scenario:'主路径',mode:'simulated'}],repository}));
+  await page.setContent(make({stage:'start',plan_id:'p',plan_digest:'d',request_id:'start-intent',cases:[{scenario:'主路径',mode:'simulated'}],repository}));
   await page.getByRole('button',{name:'开始测试'}).click();
   assert.equal(JSON.parse((await page.evaluate(()=>window.sent.prompt)).split('\n')[1]).plan_digest,'d');
+  assert.equal(JSON.parse((await page.evaluate(()=>window.sent.prompt)).split('\n')[1]).request_id,'start-intent');
   await page.close(); await context.close();
 } finally {await browser.close();}
 assert.deepEqual(errors,[]);

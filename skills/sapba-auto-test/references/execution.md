@@ -7,26 +7,47 @@ Run `<repository>/.venv/Scripts/python.exe <skill>/scripts/run.py <command> ...`
 | Command | Inputs / behavior |
 |---|---|
 | `inventory` | Current feature tree, sources, test references and digest; no live calls |
+| `capabilities` | Discover registered platform read tools and approved Skills; configuration health only |
+| `sap-read --task ID --case ID --role sample/baseline/anchor` | Task-bound platform read; same receipt contract as MCP; no credentials or arbitrary destination |
 | `card --output PATH` | Inline feature selector; add `--plan ID` for Start, `--task ID` for status actions |
 | `prepare --select FEATURE... --cases FILE --inventory-digest HASH` | Freeze generated cases and scripts; default max repairs 3 |
 | `start --plan ID --digest HASH --request-id start:ID` | Idempotent snapshot; does not dispatch cases |
 | `environment --task ID` | Prepare disposable target and return Python/site commands and isolated state paths |
 | `target-marker --task ID` | Place target identity in that target's public assets |
 | `bind-target --task ID --site-url URL --api-url URL` | Verify site marker and API data-root isolation |
+| `bind-platform --task ID --site-url URL` | Free-query-only reuse of the configured local platform; owned frontend marker and platform boot binding |
 | `run-round --task ID` / `run-case --task ID --case ID` | Collect outcomes; native cases return an owned claim for host tools |
 | `finish-case --task ID --case ID --token TOKEN --result FILE` | Save actual terminal outcome and evidence; live passes require independent comparison |
 | `begin-repair` / `verify-repair` | Whole-round repair gate / frozen targeted retest queue; both take `--task` |
+| `diagnose --task ID --file FILE` | Save root-cause groups after collection; entries contain `root_cause_id`, `case_ids`, `category` (product/test/environment/data), and an evidence-based `reason` |
+| `revise-locators --task ID --file FILE` | During batch repair only; JSON has `reason`, run-relative `evidence` and `corrections:[{case_id,action_index,locator:{selector:...}}]`. Only locator fields may change; a new plan/scripts are saved and original evidence remains |
 | `begin-final` / `complete` / `apply` | Final selected-suite review, freeze result, conflict-checked local application |
 | `status` / `report` / `cancel` / `resume` / `retest` | All take `--task`; resume may reconcile `--interrupted-case ID` |
 | `recover-apply --task ID` | Reconcile an interrupted application; never overwrite unrelated later edits |
 
 `source/` is the repair candidate. `targets/<round>/source/` is the disposable product repository where lifecycle tests may publish temporary Agents/workflows. They have separate Git metadata and separate state. Rebuild the site from the current target, configure its API origin, and rebind at each new round. Read `site` source to use its actual API-origin setting. Only credential configuration is reused through protected references/environment; do not copy the user's database, auth cache or mail connections into the target. Missing verified Runtime state is a preflight blocker to resolve through the product's normal setup, never by manufacturing admission receipts.
 
+Start cards carry a distinct persistent request ID. Reuse it after response loss. Creating a new start card after a completed task permits a fresh test run and fresh SAP receipts; it must not silently reuse yesterday's outcomes. Multiple start requests while the same plan is active resolve to that active task, including later retries of those requests.
+
+Query-only platform reuse keeps the task-owned frontend build and evidence while using the existing configured API/Runtime. `bind-platform` reads that API origin from platform Settings. The profile permits one initial free query plus input/feedback/cancellation for observed task-owned runs and sessions. Use `assets/query-guard.mjs` in native browser scripts as well as the declarative runner. Record the platform boot/source binding in evidence; this profile does not claim that a candidate backend patch is deployed. Backend product changes still require a newly verified backend before acceptance.
+
+Use `bind-platform --frozen-ui` with an origin already approved in platform Settings to serve the task's frozen build through browser resource routing. This records and rechecks the built-file digest and task marker, keeps the real API's CORS/authentication checks, and requires no change to the user's running frontend. Never disable browser security or rewrite API authorization/CORS responses. Baselines requiring complete key sets use the platform's complete paging rather than explicit `top`, which its contract deliberately marks incomplete. The test adapter still caps reads at 5000 rows, ten business GETs and the task timeout. A new revision may audit this transport correction while preserving all business filters, requested columns, questions, comparisons and assertions; previous receipts remain unchanged.
+
+Fixture revisions use `prepare --parent-task ID --revision-reason TEXT --cases FILE --select ...`. The old task must be drained. A new plan records parent IDs and fixture hashes; assertions, exception expectations, parameterizations, scope, sample/baseline/comparison, questions and case IDs stay protected. Setup fixes are not business-oracle fixes. Existing regression files inside an active frozen candidate still cannot be changed to obtain PASS.
+
 The active backend reports `data_root` from `/api/config/status`. Native tools may poll run status and fetch existing artifacts; polling does not resubmit queries. Record product run IDs and reconcile them after response loss. Cancelling the test runner alone does not prove a product run or SDK operation has stopped: cancel through the product UI/API and confirm its terminal state.
+
+For repaired query backends, `environment --task TASK --reuse-platform` generates a task-owned bootstrap of the real application using existing platform SAP configuration and `runtime_state_reference`. Only query records/evidence and draft artifacts are isolated. Use the returned `api_command` and `environment`, build the existing product frontend for the returned origins, then `bind-target --task TASK --site-url SITE --api-url API --native-identity`. The bootstrap verifies the frozen source digest and exposes only task/source/data identity at the marker route. Runtime authentication and model qualification stay real. Shared platform tasks must remain running.
+
+`revise-native --task TASK --file REVISION.json` accepts `{case_ids,reason,script}` during batch repair. `script` is a task-relative `.mjs` evidence path. The new immutable plan records its digest without changing assertions, SAP recipes or scope; any later script change is rejected. Resume accepted work by its owned IDs after a lost response, or prove the original operation terminal before a new submission.
+
+`begin-final --task TASK --reuse-complete-round` avoids duplicate execution when the current finished round already contains a fresh verified PASS for every selected case on the unchanged source and patch. It rejects partial targeted rounds, older-round substitutions, unverified live comparisons and tampered evidence. It records this reuse explicitly in the report. Review real business completeness, scope confirmation, feedback read counters and downloaded values before `complete`; use default `begin-final` when another full execution is needed.
 
 ## Cases
 
 Every case has `id`, `feature`, `operation`, `scenario`, `kind`, `mode`, `assertions`, optional `depends_on` and `impact_paths`. Operation names and existing regression files come from inventory. Features are `free-query`, `workflows`, `agent-management`, `fixed-agents`, `role-matching`, `plugins`, `settings`, `history`.
+
+Selection accepts a whole category (`free-query`), a leaf operation (`free-query/feedback`), or a discovered fixed Agent (`fixed-agents@ap-payment`). The generated plan records effective `operation_selection` and `object_selection`; cases must stay within them. Object-specific cases declare `object_id`. The inline card exposes these narrower selections under each category.
 
 - `pytest` / `node-test`: explicit repository-relative `test_refs`; always `mode=offline`.
 - `native`: host browser, Computer Use or connector interactions; include concrete `steps` and assertions. Save actual tool observations/screenshots, then a result JSON containing `status`, `code`, `layer` and run-directory-relative `evidence` paths. Do not record PASS just because no exception was visible.
@@ -48,9 +69,11 @@ For meaningful business coverage, add the actual frontend scenarios rather than 
 
 `sample` and `baseline` have `{plan: <registered structured GET plan>}`. Use the current `sap_business_agents_platform.runtime_query_contract` schema. Credentials, URLs, SQL, write verbs and function imports are not allowed. A sample is a single bounded query of at most 100 rows. Field bindings use the entire string `$sample.Field`, preserving its type and the row's related key tuple. Baseline and anchor use the same frozen query and bindings. Each read has ten business GETs and 540 seconds for evidence, with a 600-second task boundary.
 
+Approved SAPSkillhub sources can instead use `{skill_id: <approved ID>, input: <declared input>, rows_pointer: "/rows"}`. The existing SkillRegistry verifies supply-chain digests, read-only approval, input/output schemas and transport. ADT exports require at most 100 sample rows or 5000 baseline rows. Other Skills retain their own approved bounds. Missing explicit completeness stays inconclusive. This route is recorded as `approved_skill` with semantic read-only attribution, never falsely as HTTP GET.
+
 MCP tools: `test_inventory`, `test_prepare`, `test_start`, `test_status`, `test_sap_read`, `test_cancel`. Register with `install --register-mcp`; reload the host tools/new chat before expecting them. `test_sap_read` accepts only task ID, case ID and role (`sample`, `baseline`, `anchor`). It reads the already-frozen recipe, checks registered services/live schema through the existing Provider, owns credentials and persists a receipt. Repeated completed calls reuse that receipt; unknown calls are not replayed.
 
-Capture frontend business rows as an `observation.json` containing `rows`, `scope` (the exact effective frozen baseline plan), `source_complete`, `source_truncated` and `captured_at`. `capture_json` takes `path`, `rows_pointer`, `complete_pointer`, optional `truncated_pointer`, and `scope`; `capture_table` takes row `selector`, field-to-cell-selector `fields`, `complete_selector` and `scope`. Only use completeness proven by the product; incomplete presentation is not an empty result.
+Capture frontend business rows under the returned case execution directory as `observation.json` containing `rows`, `scope` (the exact effective frozen baseline plan, or `{skill_id,input}`), `source_complete`, `source_truncated` and `captured_at`. `capture_json` takes `path`, `rows_pointer`, `complete_pointer`, optional `truncated_pointer`, and `scope`; `capture_table` takes row `selector`, field-to-cell-selector `fields`, `complete_selector` and `scope`. Only use completeness proven by the product; incomplete presentation is not an empty result.
 
 `comparison` supports `key_set`, `key_subset`, `count_only`, `count_and_key_subset`, required `keys`, `required_fields`, and optional per-field `{type:decimal,tolerance:"0"}` checks. Independent baseline projection supports `field_map`, `group_by`, and `aggregates` with `count` or `sum`; all currency/unit dimensions of sums must be in `group_by`. Preserve SAP identifiers and leading zeros. No comparisons of totals across incomparable currencies or quantities.
 
