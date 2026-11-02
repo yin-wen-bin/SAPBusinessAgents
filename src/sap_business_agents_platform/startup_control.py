@@ -29,6 +29,50 @@ def atomic(path, value):
     os.replace(temporary, path)
 
 
+def initial_install_state(root):
+    """Allow a first deployment or its failed preparation, never repair old records.
+
+    The receipt identifies files created by an interrupted first installation.
+    It is coordination metadata, not SDK/model/SAP execution authority.
+    """
+    root = Path(root).resolve()
+    data = root / '.local-data'
+    for path in (data, data / 'startup', data / 'site-builds',
+                 data / 'startup-releases', data / 'startup-source-archives'):
+        if (os.path.lexists(path) and getattr(path.lstat(), 'st_file_attributes', 0) & 0x400
+                or path.is_symlink()):
+            raise StartupBlocked('startup_initialization_link_rejected')
+    records = ('startup-api-current.json', 'startup-api-previous.json',
+               'startup-api-legacy-rollback.json', 'site-builds/current.json',
+               'site-builds/previous.json', 'startup-maintenance.json',
+               'startup/pending-switch.json')
+    if any(os.path.lexists(data / name) for name in records):
+        raise StartupBlocked('startup_initialization_existing_state')
+    receipt_path = data / 'startup/initialization.json'
+    receipt = None
+    if os.path.lexists(receipt_path):
+        try:
+            if receipt_path.is_symlink():
+                raise ValueError('link')
+            receipt = json.loads(receipt_path.read_text(encoding='utf-8-sig'))
+            if (receipt['version'] != 1 or receipt['root'] != str(root)
+                    or receipt['status'] not in {'preparing', 'failed'}):
+                raise ValueError('receipt')
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise StartupBlocked('startup_initialization_recovery_required') from exc
+    if receipt is None:
+        if os.path.lexists(data / 'platform.sqlite3'):
+            raise StartupBlocked('startup_initialization_existing_data')
+        for name in ('startup-releases', 'startup-source-archives', 'site-builds'):
+            directory = data / name
+            if os.path.lexists(directory) and (not directory.is_dir()
+                    or any(p.name not in {'archive.lock', 'release.lock', 'build.lock'} for p in directory.iterdir())):
+                raise StartupBlocked('startup_initialization_existing_state')
+        if os.path.lexists(data / 'startup/latest.json'):
+            raise StartupBlocked('startup_initialization_existing_state')
+    return receipt
+
+
 @contextmanager
 def file_lock(path, *, wait=0, shared=False):
     path = Path(path); path.parent.mkdir(parents=True, exist_ok=True)

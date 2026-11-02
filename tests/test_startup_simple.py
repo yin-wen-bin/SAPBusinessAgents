@@ -238,12 +238,15 @@ def test_malformed_health_never_starts_another_service(setup, monkeypatch, value
 
 
 @pytest.mark.parametrize('maintenance', [[], ['--restart'], ['--site-only'], ['--rebuild'], ['--dev']])
-def test_plain_main_is_simple_and_explicit_maintenance_keeps_old_entry(monkeypatch, maintenance):
+def test_plain_main_is_simple_and_explicit_maintenance_keeps_old_entry(tmp_path, monkeypatch, maintenance):
     calls = []
+    record = tmp_path / '.local-data/startup-api-current.json'
+    record.parent.mkdir(parents=True)
+    record.write_text('{}')
     monkeypatch.setattr(simple, 'resolve', lambda root:(Path('python.exe'),Path('frozen-startup.py')))
     monkeypatch.setattr(simple, 'simple_start', lambda *args:calls.append('simple') or 0)
     monkeypatch.setattr(simple.subprocess, 'call', lambda argv,**kwargs:calls.append(argv) or 0)
-    assert simple.main(['ensure','--root',str(ROOT),'--no-browser',*maintenance]) == 0
+    assert simple.main(['ensure','--root',str(tmp_path),'--no-browser',*maintenance]) == 0
     if maintenance:
         assert maintenance[0] in calls[0] and 'frozen-startup.py' in calls[0]
     else:

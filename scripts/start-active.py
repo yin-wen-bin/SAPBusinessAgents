@@ -76,6 +76,23 @@ def port_open(port):
         return False
 
 
+def initialize_first_install(args, maintenance):
+    """Only an uninitialized checkout may execute the first-install entry point."""
+    if args.reuse_only or maintenance:
+        raise ValueError('startup_initialization_required: run the ordinary launcher first')
+    root = args.root.resolve()
+    control = runpy.run_path(str(root / 'src/sap_business_agents_platform/startup_control.py'))
+    control['initial_install_state'](root)
+    python = root / '.venv/Scripts/python.exe'
+    if not python.is_file():
+        raise ValueError('startup_environment_missing: install Python dependencies using README.md')
+    print('[SAPBusinessAgents] First installation: preparing the local API and Web UI. No SAP or model calls.', flush=True)
+    return subprocess.call([str(python), '-I', '-B', str(root / 'scripts/service-startup.py'),
+        'initialize', '--root', str(root), '--port', str(args.port), '--site-port', str(args.site_port),
+        '--timeout', str(args.timeout), *(['--no-browser'] if args.no_browser else [])],
+        env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
+
+
 def simple_start(args, python, script):
     """No candidate, installation audit, admission review or activation journal."""
     root = args.root.resolve()
@@ -194,6 +211,8 @@ def main(argv=None):
     args, maintenance = parser.parse_known_args(argv)
     if not (1 <= args.port <= 65535 and 1 <= args.site_port <= 65535 and 1 <= args.timeout <= 300):
         raise ValueError('startup_arguments_out_of_range')
+    if not os.path.lexists(args.root.resolve() / '.local-data/startup-api-current.json'):
+        return initialize_first_install(args, maintenance)
     python, script = resolve(args.root.resolve())
     if not maintenance:
         return simple_start(args, python, script)

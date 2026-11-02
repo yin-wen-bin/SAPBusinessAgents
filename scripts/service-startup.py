@@ -328,6 +328,14 @@ def listeners():
     return {int(parts[1].rsplit(":", 1)[1]): int(parts[-1]) for line in result.stdout.splitlines() if len(parts := line.split()) == 5 and parts[0] == "TCP" and parts[3] == "LISTENING"}
 
 
+def port_open(port):
+    try:
+        with socket.create_connection(('127.0.0.1', port), timeout=.5):
+            return True
+    except OSError:
+        return False
+
+
 def project_service_command(command, root):
     tokens = [(quoted or bare).replace('\\', '/').casefold() for quoted, bare in re.findall(r'"([^\"]*)"|(\S+)', command or '')]
     prefix = str(root).replace('\\', '/').casefold().rstrip('/') + '/'
@@ -565,10 +573,13 @@ def _ensure_core(args):
             phases[name] = round((time.monotonic() - start) * 1000, 2)
             print(f"[SAPBusinessAgents] {name}: {phases[name]} ms", flush=True)
     frozen = getattr(args, 'frozen_record', None)
+    initializing = getattr(args, 'initializing', False)
     def pending_jobs():
         return jobs_pending(root,getattr(args,'operation',None)) if frozen else jobs_pending(root)
     def target_manifest():
-        if not frozen: return source_manifest(root)
+        if not frozen:
+            initial_environment = getattr(args, 'initial_environment', None)
+            return source_manifest(root, initial_environment) if initial_environment else source_manifest(root)
         archive = Path(frozen['archive'])
         value = json.loads((archive/'manifest.json').read_bytes())
         if archive.resolve() != root/'.local-data/startup-releases'/value['digest'] or value['digest'] != frozen['source_digest']:
@@ -639,6 +650,8 @@ def _ensure_core(args):
         changed = args.restart or not same
         print('[SAPBusinessAgents] Workspace update deferred: SDK integration evidence is missing. Using the verified deployed release; pending workspace changes are NOT loaded.', flush=True)
     ports = listeners()
+    if initializing and any(port in ports or port_open(port) for port in (args.port, args.site_port)):
+        raise control.StartupBlocked('startup_initialization_port_in_use')
     try: actual_site = request(f"http://127.0.0.1:{args.site_port}/sapba-build.json", timeout=1)
     except (OSError, ValueError): actual_site = {}
     site_changed = args.restart or getattr(args,'site_only',False) or args.rebuild or pointer.get("fingerprint") != fingerprint or args.site_port not in ports or pointer.get('mode', 'preview') != ('dev' if args.dev else 'preview') or (not args.dev and actual_site.get("fingerprint") != fingerprint)
@@ -726,6 +739,7 @@ def _ensure_core(args):
                                             **({'environment':environment} if environment else {})},
                                   'target_site':fingerprint,'owned':{str(k):v for k,v in owned.items()},
                                   'log':str(log)}
+                        if initializing: switch['initialization'] = True
                         if not changed:switch['target']=previous
                         control.atomic(pending_path, switch)
                         try:
@@ -759,20 +773,48 @@ def _ensure_core(args):
                                     health = request(url+'/api/health')
                                     if health.get('startup_binding',{}).get('environment_digest')!=environment['digest']:
                                         raise control.StartupBlocked('startup_environment_health_mismatch')
-                            if frozen:
+                            if frozen or initializing:
                                 _verification.set({})  # New process and commit boundary.
-                                phase('final_consistency',target_manifest)
+                                final_manifest = phase('final_consistency',target_manifest)
+                                if initializing and final_manifest != requested_manifest:
+                                    raise control.StartupBlocked('startup_changed_during_launch_not_current')
                                 if json.loads((data/'site-builds/current.json').read_bytes())['fingerprint']!=fingerprint:
                                     raise control.StartupBlocked('startup_site_binding_changed')
+                            if changed:
+                                if initializing:
+                                    # Some Windows TCP inventories omit a live loopback
+                                    # listener. The verified health PID must still be a
+                                    # descendant of this attempt's recorded process.
+                                    health = request(url + '/api/health')
+                                    if (not valid_health(health) or not valid_binding(health, manifest['digest'])
+                                            or health['startup_binding'].get('environment_digest') != environment['digest']):
+                                        raise control.StartupBlocked('startup_environment_health_mismatch')
+                                    listener_pid = health['startup_binding']['pid']
+                                    if not listener_belongs_to(listener_pid, switch['new_identity'], root):
+                                        raise control.StartupBlocked('startup_recovery_process_unconfirmed')
+                                else:
+                                    listener_pid = listeners().get(args.port)
+                                    if not listener_pid:
+                                        raise control.StartupBlocked('startup_listener_unconfirmed')
+                                record = {"archive": str(archive), "source_digest": manifest["digest"], "pid": process.pid,
+                                          "api_port":args.port,"site_port":args.site_port,
+                                          'listener_identity':identity(listener_pid,root)}
+                                if environment: record['environment'] = environment
+                                if previous: control.atomic(data / "startup-api-previous.json", previous)
+                                control.atomic(data / "startup-api-current.json", record)
+                            switch['phase']='committed'; control.atomic(pending_path,switch)
                         except BaseException as primary:
                             rollback_errors = []
-                            if site_applied and pointer.get('dist_path'):
+                            if initializing:
+                                try: rollback_initial_start(root, switch, args)
+                                except BaseException as failure: rollback_errors.append('initialization:' + type(failure).__name__)
+                            elif site_applied and pointer.get('dist_path'):
                                 try:
                                     latest_site = listeners().get(args.site_port)
                                     rollback_args = argparse.Namespace(**{**vars(args), 'dev': pointer.get('mode') == 'dev'})
                                     switch_site(root, pointer['fingerprint'], rollback_args, identity(latest_site, root) if latest_site else None, {}, log / 'rollback')
                                 except BaseException as failure: rollback_errors.append('site:' + type(failure).__name__)
-                            if api_touched:
+                            if api_touched and not initializing:
                                 try:
                                     if process is not None and process.poll() is None:
                                         stop_owned(switch['new_identity'],root);process.wait(timeout=10)
@@ -789,13 +831,6 @@ def _ensure_core(args):
                             remove_marker = True
                             pending_path.unlink(missing_ok=True)
                             raise
-                        if changed:
-                            if previous: control.atomic(data / "startup-api-previous.json", previous)
-                            record = {"archive": str(archive), "source_digest": manifest["digest"], "pid": process.pid, "api_port":args.port,"site_port":args.site_port,
-                                      'listener_identity':identity(listeners()[args.port],root)}
-                            if environment: record['environment'] = environment
-                            control.atomic(data / "startup-api-current.json", record)
-                        switch['phase']='committed'; control.atomic(pending_path,switch)
                         pending_path.unlink(missing_ok=True)
                         remove_marker = True
                     finally:
@@ -809,6 +844,9 @@ def _ensure_core(args):
     # The warm path already verified health/build bindings and enumerated the
     # actual listeners. Reuse that one inventory; updates require a fresh one.
     current_ports = listeners() if changed or site_changed else ports
+    if initializing:
+        current_ports = {**current_ports, args.port:record['listener_identity']['ProcessId'],
+                         args.site_port:switch['site_new_identity']['ProcessId']}
     state = {"status": "completed", "total_duration_ms": round((time.monotonic()-began)*1000, 2), "phases": phases, "source_digest": manifest["digest"], "site_fingerprint": fingerprint, "api_reused": not changed,
              "services": {"api": {"pid": current_ports.get(args.port), "healthy": True, "url": url}, "site": {"pid": current_ports.get(args.site_port), "healthy": True}},
              "site_cache": {"fingerprint": fingerprint, "reused": not site_changed, "build_duration_ms": phases.get("prepare_site", 0)}}
@@ -838,6 +876,105 @@ def _ensure_core(args):
         import webbrowser
         webbrowser.open(f"http://127.0.0.1:{args.site_port}/zh/")
     return state
+
+
+def rollback_initial_start(root, switch, args):
+    """Remove only this first attempt's processes/pointers; retain all evidence."""
+    if not switch.get('initialization') or switch.get('previous') or switch.get('previous_site'):
+        raise control.StartupBlocked('startup_initialization_recovery_invalid')
+    data = root / '.local-data'
+    receipt = json.loads((data / 'startup/initialization.json').read_bytes())
+    if (receipt.get('version') != 1 or receipt.get('root') != str(root)
+            or receipt.get('owner_pid') != switch['owner_pid']):
+        raise control.StartupBlocked('startup_initialization_recovery_invalid')
+    for port, key in ((args.site_port, 'site_new_identity'), (args.port, 'new_identity')):
+        pid = listeners().get(port)
+        owned = switch.get(key)
+        if pid:
+            if not owned or not listener_belongs_to(pid, owned, root):
+                raise control.StartupBlocked('startup_recovery_process_unconfirmed')
+        if owned:
+            # Stop the recorded process tree even if the TCP inventory omitted
+            # its listener. A recycled PID or foreign command is never stopped.
+            try: observed = identity(owned['ProcessId'], root)
+            except control.StartupBlocked:
+                if pid or port_open(port):
+                    raise control.StartupBlocked('startup_recovery_process_unconfirmed')
+                continue
+            if observed != owned:
+                raise control.StartupBlocked('startup_recovery_process_unconfirmed')
+            stop_owned(owned, root)
+        elif pid or port_open(port):
+            raise control.StartupBlocked('startup_recovery_process_unconfirmed')
+    for name, field, expected in (
+            ('site-builds/current.json', 'fingerprint', switch['target_site']),
+            ('startup-api-current.json', 'source_digest', switch['target']['source_digest'])):
+        path = data / name
+        if path.exists():
+            if path.is_symlink() or json.loads(path.read_bytes()).get(field) != expected:
+                raise control.StartupBlocked('startup_initialization_records_changed')
+            path.unlink()
+
+
+def initial_preflight(root):
+    python = environments.python_path(root / '.venv')
+    if not python.is_file():
+        raise control.StartupBlocked('startup_environment_missing: follow the README Python installation steps')
+    if not (root / 'site/node_modules/astro/bin/astro.mjs').is_file():
+        raise control.StartupBlocked('startup_site_dependencies_missing: run npm ci in site')
+    node, npm = shutil.which('node.exe'), shutil.which('npm.cmd')
+    if not node or not npm:
+        raise control.StartupBlocked('startup_node_missing: install Node.js and npm using README.md')
+    version = subprocess.run([node, '--version'], capture_output=True, text=True, check=True, timeout=10).stdout.strip()
+    match = re.fullmatch(r'v(\d+)\.(\d+)\.(\d+)', version)
+    if not match or tuple(map(int, match.groups())) < (22, 19, 0):
+        raise control.StartupBlocked('startup_node_version_unsupported: Node.js 22.19.0 or newer is required')
+    binding = environments.capture(root / '.venv', kind='initial')
+    verify_environment(binding)
+    return binding
+
+
+def initialize(args):
+    if (not 1 <= args.port <= 65535 or not 1 <= args.site_port <= 65535
+            or args.port == args.site_port or not 1 <= args.timeout <= 300):
+        raise control.StartupBlocked('startup_arguments_out_of_range')
+    root = args.root.resolve(); data = root / '.local-data'
+    if (data / 'startup-api-current.json').exists():
+        return ensure(args)
+    control.initial_install_state(root)
+    with control.file_lock(data / 'startup-initialization.lock', wait=300):
+        # Another first-start process may have completed while this one waited.
+        if (data / 'startup-api-current.json').exists():
+            return ensure(args)
+        previous = control.initial_install_state(root)
+        settings = settings_for(root)
+        if (previous and previous.get('data_root') != str(settings.data_root)):
+            raise control.StartupBlocked('startup_initialization_configuration_changed')
+        if not previous and (settings.data_root / 'platform.sqlite3').exists():
+            raise control.StartupBlocked('startup_initialization_existing_data')
+        if control.activity(settings.data_root) or jobs_pending(root):
+            raise control.StartupBlocked('startup_initialization_busy')
+        ports = listeners()
+        if any(port in ports or port_open(port) for port in (args.port, args.site_port)):
+            raise control.StartupBlocked('startup_initialization_port_in_use')
+        binding = initial_preflight(root)
+        receipt = {'version':1, 'root':str(root), 'data_root':str(settings.data_root),
+                   'status':'preparing', 'owner_pid':os.getpid()}
+        path = data / 'startup/initialization.json'
+        control.atomic(path, receipt)
+        args.initializing = True; args.initial_environment = binding; args.activation = True
+        try:
+            result = ensure(args)
+        except BaseException:
+            receipt['status'] = 'recovery_required' if any((data / p).exists() for p in (
+                'startup/pending-switch.json','startup-maintenance.json',
+                'startup-api-current.json','site-builds/current.json')) else 'failed'
+            control.atomic(path, receipt)
+            raise
+        receipt.update(status='completed', source_digest=result['source_digest'],
+                       site_fingerprint=result['site_fingerprint'])
+        control.atomic(path, receipt)
+        return result
 
 
 def active_records(root):
@@ -1202,6 +1339,11 @@ def recover_switch(args):
     with control.file_lock(activity_root/'deployment.lock'), control.file_lock(activity_root/'startup-admission.lock'):
         if not path.exists():return {'status':'nothing_pending'}
         saved=json.loads(path.read_bytes())
+        if saved.get('initialization'):
+            receipt=json.loads((data/'startup/initialization.json').read_bytes())
+            if (receipt.get('version')!=1 or receipt.get('root')!=str(root)
+                    or receipt.get('owner_pid')!=saved['owner_pid']):
+                raise control.StartupBlocked('startup_initialization_recovery_invalid')
         operation=saved.get('operation_id');record=None
         if operation:
             if not re.fullmatch(r'update_[a-f0-9]{32}',operation):
@@ -1240,7 +1382,16 @@ def recover_switch(args):
                 if target.get('environment'):environments.verify(target['environment'])
                 if previous:control.atomic(data/'startup-api-previous.json',previous)
                 control.atomic(data/'startup-api-current.json',{**target,'pid':current})
+            if saved.get('initialization'):
+                control.atomic(data/'site-builds/current.json',{
+                    'fingerprint':saved['target_site'],
+                    'dist_path':str(data/'site-builds'/saved['target_site']/'dist'),
+                    'mode':'preview','pid':processes[args.site_port],
+                    'listener_identity':saved['site_new_identity']})
             outcome='activated'
+        elif saved.get('initialization'):
+            rollback_initial_start(root, saved, args)
+            outcome='rolled_back'
         else:
             if saved['api_changed']:
                 if not previous:raise control.StartupBlocked('startup_rollback_binding_missing')
@@ -1275,6 +1426,13 @@ def recover_switch(args):
             record.update(status='completed' if outcome=='activated' else 'failed',phase=outcome,outcome=outcome,cleanup_complete=True)
             if outcome=='rolled_back':record['error']={'code':'sdk_activation_rolled_back','phase':'recovery'}
             control.atomic(record_path,record)
+        if saved.get('initialization'):
+            receipt_path=data/'startup/initialization.json'
+            receipt=json.loads(receipt_path.read_bytes())
+            if receipt.get('root')!=str(root) or receipt.get('owner_pid')!=saved['owner_pid']:
+                raise control.StartupBlocked('startup_initialization_recovery_invalid')
+            receipt['status']='completed' if outcome=='activated' else 'failed'
+            control.atomic(receipt_path,receipt)
         control.atomic(Path(saved['log'])/'recovery.json',{'outcome':outcome,'operation_id':saved.get('operation_id')})
         path.unlink();marker.unlink(missing_ok=True)
         return {'status':'completed','outcome':outcome}
@@ -1393,7 +1551,7 @@ def activate_frontend(args):
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", choices=("ensure", "serve", "fingerprint", "activate-code", "activate-sdk", "recover-bytecode", "recover-switch"))
+    parser.add_argument("command", choices=("ensure", "initialize", "serve", "fingerprint", "activate-code", "activate-sdk", "recover-bytecode", "recover-switch"))
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--site-port", type=int, default=4321)
@@ -1411,6 +1569,7 @@ def main(argv=None):
     arguments = parser.parse_args(argv)
     try:
         if arguments.command == "serve": serve(arguments)
+        elif arguments.command == 'initialize': initialize(arguments)
         elif arguments.command == 'activate-code': activate_code(arguments)
         elif arguments.command == 'recover-bytecode': recover_bytecode(arguments)
         elif arguments.command == 'activate-sdk': activate_sdk(arguments)

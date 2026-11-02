@@ -12,11 +12,13 @@
 
 ### 启动与第一次检查
 
-运行仓库根目录的`start-sap-business-agents.cmd`，或README中的PowerShell启动器。默认页面为[中文主页](http://127.0.0.1:4321/zh/)，API为`http://127.0.0.1:8765`。启动器检查依赖、构建或复用站点缓存，然后启动服务；仅启动不等于执行SAP业务查询。
+运行仓库根目录的`start-sap-business-agents.cmd`，或README中的PowerShell启动器。默认页面为[中文主页](http://127.0.0.1:4321/zh/)，API为`http://127.0.0.1:8765`。当前main首次启动会识别没有部署历史的新安装，校验已安装依赖、冻结本机源码和Python环境、构建前端、验活后生成本机激活记录；不需要已有`.local-data`或别人的历史数据库。后续普通启动复用该组合，不重新部署工作区。启动不执行SAP或模型调用，也不自动安装依赖。
 
-修改端口时使用启动器的`-ApiPort`和`-SitePort`；不要误停另一个工作树的服务。前端应连接同一个实例的API。开发者也可在一个终端运行`.\.venv\Scripts\sap-business-agents.exe --port 8765`，在另一终端进入site后运行`npm run dev`。
+首次准备在启动服务前失败时，保留诊断并允许修正问题后重试。未完成的切换或已有记录损坏会阻断，不能删除记录冒充全新安装；先核对日志，必要时使用`service-startup.py recover-switch`恢复同一次切换。已有业务数据库或历史部署不自动按首次安装接管。
 
-普通双击会核对实际运行版本，内容一致时复用服务，变化时等待空闲再受控更新。显式重启请使用`restart-sap-business-agents.cmd`或`-Restart`；它仍不能绕过活动任务及清理门禁。详见[按版本启动与回退](startup-versioning.md)。
+修改端口时使用启动器的`-ApiPort`和`-SitePort`；不要误停另一个工作树的服务。前端应连接同一个实例的API。直接运行API CLI与`npm run dev`只供显式开发调试，不会建立普通启动所需的激活记录，不能代替首次初始化。
+
+普通双击只复用当前已激活版本，工作区变化不会自动上线。显式重启请使用`restart-sap-business-agents.cmd`或`-Restart`；它仍不能绕过活动任务及清理门禁。修改后激活与恢复见[普通启动与修改后激活](startup-and-activation.md)。
 
 固定Agent无须启用Runtime，但仍需可用的SAP连接、所引用的Skill及通过验收的活动版本。`/api/tools/skills`列出5个批准Skill只能证明本机包可用，不能证明目标SAP的ADT权限、固定来源Profile或业务证据有效；`sap-control-object-commitment-evidence`目前未验证，不在批准目录中。需要自由查询、岗位匹配或自然语言编写时，依次完成[Runtime设置](runtime-settings.md)。[在线目录](https://yin-wen-bin.github.io/SAPBusinessAgents/zh/)没有你的本地数据库、登录或SAP连接。
 
@@ -45,9 +47,11 @@ Follow the [README installation](../README.md#first-installation-and-startup): c
 
 ### Start and check
 
-Run `start-sap-business-agents.cmd` from the root or the README PowerShell launcher. Open the [English home](http://127.0.0.1:4321/en/); the API defaults to `http://127.0.0.1:8765`. The launcher checks dependencies, builds/reuses the site and starts services. Startup alone is not a SAP business query.
+Run `start-sap-business-agents.cmd` from the root or the README PowerShell launcher. Open the [English home](http://127.0.0.1:4321/en/); the API defaults to `http://127.0.0.1:8765`. On current main, the first start of a checkout without deployment history verifies installed dependencies, freezes its local source/environment, builds the frontend and records the healthy activated pair. No private `.local-data` or historical database is needed. Later starts reuse that pair without deploying checkout changes. Startup makes no SAP/model calls and never installs dependencies automatically.
 
-Use `-ApiPort` and `-SitePort` for different ports. Do not terminate another worktree's service; connect the frontend to the same instance's API. Developers may run `.\.venv\Scripts\sap-business-agents.exe --port 8765` in one terminal and `npm run dev` inside site in another.
+Failed first preparation retains diagnostics and may be retried after fixing the cause. Incomplete switches or damaged existing records require review/recovery; do not delete records to impersonate a fresh install. Use `service-startup.py recover-switch` only to recover the same interrupted switch. Existing business databases and deployment history are not automatically adopted as a new installation.
+
+Use `-ApiPort` and `-SitePort` for different ports. Do not terminate another worktree's service; connect the frontend to the same instance's API. Direct API CLI and `npm run dev` are explicit development tools; they do not create ordinary-start activation records and do not replace first initialization.
 
 Fixed Agents need no Runtime, but still require SAP access, referenced Skills and an active accepted version. The five approved IDs shown by `/api/tools/skills` prove only that local packages are available, not that the target SAP grants ADT access, has valid fixed-source profiles or can provide business evidence. `sap-control-object-commitment-evidence` remains unvalidated and is not approved. Configure [Runtime settings](runtime-settings.md) for free queries, role matching and natural-language authoring. The [online catalog](https://yin-wen-bin.github.io/SAPBusinessAgents/en/) has no local database, login or SAP connection.
 

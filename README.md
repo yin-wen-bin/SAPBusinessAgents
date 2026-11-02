@@ -133,6 +133,8 @@ try { & $skillCheckPython .\scripts\check_environment.py } finally { Pop-Locatio
 
 `sap-control-object-commitment-evidence`虽在平台清单中，但当前 `validated=false`，不会进入批准目录；安装文件不能使它获得执行资格。Skill 包可用也不等于目标 SAP 权限、Profile、对象和业务证据已验证；缺少依赖 Skill 时，引用它的固定 Agent 会拒绝运行。
 
+当前 `main` 源码在安装依赖后，首次普通启动会为没有部署历史的新目录初始化本机 Python 环境绑定、冻结源码、构建前端并生成激活记录；不需要复制其他机器的 `.local-data`、数据库、草稿或报告。启动不会访问 SAP 或调用模型。缺少依赖会提示安装步骤，不会自动安装；已有记录损坏或切换未完成时不会重新初始化覆盖。发布标签使用其随附版本的启动实现。
+
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-SAPBusinessAgents.ps1
 ```
@@ -346,6 +348,8 @@ try { & $skillCheckPython .\scripts\check_environment.py } finally { Pop-Locatio
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-SAPBusinessAgents.ps1
 ```
+
+After dependency installation, the current `main` source initializes a new checkout's local Python binding, frozen API source, frontend build and activation records on its first ordinary start. Do not copy another machine's `.local-data`, database, drafts or reports. Startup makes no SAP/model calls and does not install dependencies automatically. Existing corrupt records or unfinished switches require recovery rather than reinitialization. Release tags retain their bundled startup implementation.
 
 Open the [local English home](http://127.0.0.1:4321/en/); the API listens on `127.0.0.1:8765` by default. For natural-language features, use System settings → Agent Runtime and SDK to confirm login, refresh the model catalog, check compatibility, choose a model, enable the Runtime and select the default Runtime. Model choices come from the installed SDK and account, not a fixed list.
 
