@@ -848,6 +848,7 @@ async def _wait_api(client: httpx.AsyncClient, api_url: str, run_id: str, timeou
 def _acceptance_prompt(case: CanonicalTestCase, contract: JsonObject) -> str:
     """Append only the value-free reporting contract required for comparison."""
     from sap_business_agents_platform.runtime_query_contract import ReadScope
+    from sap_business_agents_platform.runtime_report_contract import acceptance_display_instructions
     frozen_scope = ReadScope("", case.input)
     scope_requirements = [{"field_aliases": list(names), "allowed_operators": ["eq", "in"]}
         for names, _values in frozen_scope.constraints]
@@ -889,6 +890,7 @@ def _acceptance_prompt(case: CanonicalTestCase, contract: JsonObject) -> str:
         "- Put homogeneous records in a table, aggregate values in metrics, and preserve SAP source completeness separately from display pagination.",
         "- This is an acceptance-mode run. Populate acceptance_projection with the same complete canonical records and metrics shown in the validated presentation.",
         "- acceptance_projection must separately report business_status, source_complete, evidence_complete, business_complete, evidence_gap_codes, and only run-scoped verified evidence_refs.",
+        "- " + acceptance_display_instructions(),
         "- Never infer acceptance_projection from prose and never omit a required record merely because it is normal, zero, or not_found.",
         "- Before adding filters to a new source, obtain its complete authoritative Schema (sap_schema_get max_fields=5000; fields_truncated must be false). A scope rejection without Schema is not proof that the missing field exists on that source. Preserve all confirmed conditions, prove applicable conditions and associations using live metadata/evidence, and never invent fields or use unrestricted reads.",
         "- Frozen read-scope requirements from confirmed inputs: " + json.dumps(scope_requirements) + ". For each source, retain every applicable requirement using the confirmed input value and an exact server-side eq/in filter. Reading the whole order/source then filtering dates, organizations or other conditions locally is not equivalent authorization and will be rejected. A field absent from authoritative metadata must instead be proved through an authorized association; never invent it or drop the overall condition.",

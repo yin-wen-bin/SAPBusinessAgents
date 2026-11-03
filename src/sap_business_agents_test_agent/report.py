@@ -56,6 +56,10 @@ def report(store, task_id):
                   f"新增回归：{len(value['regressions'])}；证据变更：{len(value['evidence_invalid'])}。"])
     if task.get("final_review", {}).get("mode") == "completed_full_scope_round":
         lines.append("最终复核采用本轮完整范围的新执行结果；已核对源码、补丁、脚本和证据哈希，未重复执行相同版本。")
+    update = task.get("application", {}).get("startup_update")
+    if update:
+        lines.append("启动更新登记：" + update["status"] + (" · " + update["code"] if update.get("code") else "")
+                     + "。登记成功表示下次普通启动可受控激活，不代表正式 API 已切换。")
     if coverage_gaps:
         lines.extend(["", "未覆盖操作：" + "、".join(f"{gap['feature']}/{gap['operation']}" for gap in coverage_gaps)])
     atomic_bytes(store.task_dir(task_id) / "report.md", ("\n".join(lines) + "\n").encode("utf-8"))

@@ -9,19 +9,37 @@ export class ListResource {
   private pending?: Promise<void>;
   private fetcher: (signal: AbortSignal) => Promise<any[]>;
   private changed: (state: ResourceState) => void;
-  constructor(fetcher: (signal: AbortSignal) => Promise<any[]>, changed: (state: ResourceState) => void) {
+  private timeoutMs: number;
+  constructor(fetcher: (signal: AbortSignal) => Promise<any[]>, changed: (state: ResourceState) => void,
+    options: { timeoutMs?: number } = {}) {
     this.fetcher = fetcher; this.changed = changed;
+    this.timeoutMs = Number.isFinite(options.timeoutMs) && Number(options.timeoutMs) > 0 ? Number(options.timeoutMs) : 15000;
   }
-  refresh(): Promise<void> {
-    if (this.pending) return this.pending;
+  refresh(force = false): Promise<void> {
+    if (this.pending && !force) return this.pending;
+    this.controller?.abort();
     const generation = ++this.generation;
-    this.controller = new AbortController();
-    const signal = this.controller.signal;
+    const controller = new AbortController();
+    this.controller = controller;
+    const signal = controller.signal;
     this.state = { ...this.state, loading: true };
     this.changed(this.state);
     const task = async () => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let aborted: (() => void) | undefined;
       try {
-        const data = await this.fetcher(signal);
+        if (signal.aborted) return;
+        const cancellation = new Promise<never>((_, reject) => {
+          aborted = () => reject(new Error("List request cancelled"));
+          signal.addEventListener("abort", aborted, { once: true });
+        });
+        const timeout = new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error("List request timed out. Retry."));
+            controller.abort();
+          }, this.timeoutMs);
+        });
+        const data = await Promise.race([this.fetcher(signal), cancellation, timeout]);
         if (!Array.isArray(data)) throw new Error("Invalid list response");
         if (generation !== this.generation) return;
         this.state = { data, loading: false, loaded: true, error: "", updatedAt: Date.now() };
@@ -29,6 +47,8 @@ export class ListResource {
         if (generation !== this.generation) return;
         this.state = { ...this.state, loading: false, error: error?.message || "Load failed" };
       } finally {
+        clearTimeout(timer);
+        if (aborted) signal.removeEventListener("abort", aborted);
         if (generation === this.generation) {
           this.pending = undefined;
           this.changed(this.state);

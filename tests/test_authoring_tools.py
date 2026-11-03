@@ -36,7 +36,7 @@ def test_preflight_uses_same_named_profile(tmp_path):
         SimpleNamespace(source=tmp_path), ['fixed-probe'], timeout=2))
     assert result == (0, b'ok', b'')
     assert calls == [('command/exec', {'command': ['fixed-probe'], 'cwd': str(tmp_path),
-                                     'permissionProfile': 'sapba-authoring', 'timeoutMs': 2000})]
+                                     'permissions': 'sapba-authoring', 'timeoutMs': 2000})]
 
 
 def test_preflight_has_controller_timeout(monkeypatch, tmp_path):

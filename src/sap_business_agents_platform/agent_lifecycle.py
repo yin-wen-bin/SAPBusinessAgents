@@ -83,7 +83,7 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             settings.repository_root, settings.data_root
         )
         self._site_release = SiteReleaseManager(
-            settings.repository_root, settings.data_root
+            settings.repository_root, settings.data_root, site_origins=settings.local_ui_origins
         )
 
     @staticmethod
@@ -861,6 +861,28 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
                     "active_operation": active_operation,
                 }
             )
+        known_ids = {item["draft_id"] for item in items}
+        for creation in self.store.list_pending_draft_creations():
+            source_id = creation["draft_id"]
+            managed_id = "agent_draft_" + hashlib.sha256(source_id.encode()).hexdigest()[:24]
+            if managed_id in known_ids:
+                continue
+            pending = creation["payload"]
+            creating = creation["status"] in {"creating", "generated"}
+            items.append({
+                "draft_id": managed_id, "agent_id": pending["agent_id"],
+                "source_type": "free_query", "status": "creating" if creating else "creation_failed",
+                "revision": 0, "target_version": pending["target_version"],
+                "title": copy.deepcopy(pending["title"]), "module": pending["module"],
+                "catalog_module": pending["module"], "creation_pending": True,
+                "created_at": creation["created_at"], "updated_at": creation["updated_at"],
+                "validation": {"verdict": "NOT_TESTED", "executable": False},
+                "metadata": {"source_run_id": pending["source_run_id"], "source_draft_id": source_id},
+                "technical_identity": {"confirmed": False, "locked": True, "can_rename": False},
+                "management": {"can_delete": False, "delete_blockers": ["agent_draft_creation_pending"]},
+                "creation": {"phase": pending["phase"], "error_code": pending.get("error_code")},
+                "active_operation": {"kind": "creation", "status": "running" if creating else "failed"},
+            })
         return items
 
     def set_draft_ui_state(self, draft_id: str, last_step: str) -> dict[str, Any]:
@@ -2450,17 +2472,52 @@ class AgentLifecycleService(AgentIdentityMixin, AgentAuthoringMixin):
             raise AgentLifecycleError("The complete Agent package failed catalog validation.", code="agent_package_invalid")
 
     def deactivate(self, agent_id: str, payload: Any) -> dict[str, Any]:
-        manifest = self._assert_expected(agent_id, payload.expected_version, payload.expected_agent_hash)
-        lifecycle = self.agents.lifecycle(agent_id)
-        if lifecycle["state"] != "active":
-            raise AgentLifecycleError("Agent is already inactive.", code="agent_already_inactive")
-        branch = self._prepare_branch(agent_id, "deactivate", payload.expected_version)
-        lifecycle.update(lifecycle_state="inactive", state="inactive", deactivated_at=utc_now(), deactivation_reason=payload.reason, git_branch=branch)
-        directory = self.agents._path(agent_id).parent
-        self._write_json(directory / "publication.json", lifecycle)
-        commit = self._commit_agent_change(directory, f"Deactivate {agent_id}")
-        self._audit(agent_id, "deactivated", payload.expected_version, payload.expected_version, agent_digest(manifest), branch, commit, {"reason": payload.reason})
-        return {"agent_id": agent_id, "state": "inactive", "branch": branch, "commit_sha": commit, "pushed": False}
+        with self._import_lock:
+            manifest = self._assert_expected(agent_id, payload.expected_version, payload.expected_agent_hash)
+            lifecycle = copy.deepcopy(self.agents.lifecycle(agent_id))
+            if lifecycle["state"] != "active":
+                raise AgentLifecycleError("Agent is already inactive.", code="agent_already_inactive")
+            try:
+                base_sha = self._publication_workspace.assert_clean_main()
+            except PublicationInfrastructureError as exc:
+                raise AgentLifecycleError(str(exc), code=exc.code) from exc
+            operation_id = f"agent_op_{uuid.uuid4().hex[:20]}"
+            branch = self._publication_workspace.branch_name(agent_id, payload.expected_version, operation_id).replace("-publish-", "-deactivate-")
+            relative = self.agents._path(agent_id).parent.relative_to(self.settings.repository_root)
+            worktree: Path | None = None
+            try:
+                worktree = self._publication_workspace.create(operation_id, branch, base_sha)
+                lifecycle.update(lifecycle_state="inactive", state="inactive", deactivated_at=utc_now(),
+                                 deactivation_reason=payload.reason, git_branch=branch,
+                                 git_commit="recorded_in_agent_management_events")
+                self._write_json(worktree / relative / "publication.json", lifecycle)
+                self._refresh_catalog_documentation_at(worktree)
+                try:
+                    build = self._site_release.prepare(worktree, operation_id=operation_id, agent_id=agent_id,
+                                                      version=payload.expected_version, catalog_module=self.agents.catalog_module(agent_id),
+                                                      expected_state="inactive")
+                except SiteReleaseError as exc:
+                    raise AgentLifecycleError(str(exc), code=exc.code) from exc
+                commit = self._publication_workspace.commit(worktree, f"Deactivate {agent_id}", relative)
+                with deployment_file_lock(self.settings.data_root), self.agents.write_transaction():
+                    try:
+                        self._publication_workspace.fast_forward(commit, base_sha)
+                    except PublicationInfrastructureError as exc:
+                        raise AgentLifecycleError(str(exc), code=exc.code) from exc
+                self._audit(agent_id, "deactivated", payload.expected_version, payload.expected_version,
+                            agent_digest(manifest), branch, commit, {"reason": payload.reason, "base_sha": base_sha})
+                try:
+                    switched = self._site_release.switch(build, operation_id=operation_id, agent_id=agent_id,
+                                                         version=payload.expected_version, catalog_module=self.agents.catalog_module(agent_id),
+                                                         expected_state="inactive")
+                except Exception as exc:
+                    switched = {"status": "failed", "failure_code": str(getattr(exc, "code", "site_refresh_failed"))}
+                refreshed = switched.get("status") == "completed"
+                return {"agent_id": agent_id, "state": "inactive", "branch": branch, "commit_sha": commit,
+                        "pushed": False, "site_refresh_status": "completed" if refreshed else "failed",
+                        "failure_code": None if refreshed else switched.get("failure_code") or "site_refresh_failed"}
+            finally:
+                self._publication_workspace.cleanup(worktree)
 
     def activate(self, agent_id: str, payload: Any) -> dict[str, Any]:
         current = self._assert_expected(agent_id, payload.expected_version, payload.expected_agent_hash)

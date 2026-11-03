@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import logging
 import re
 import time
 import uuid
@@ -37,6 +38,7 @@ _SERVICE = re.compile(r"^[A-Za-z0-9_]+(?:;v=[0-9]+)?$")
 _OPERATORS = {"eq", "ne", "gt", "ge", "lt", "le", "contains", "in"}
 _METHOD_KEYS = {"http_method", "httpMethod", "method"}
 _SAP_NS = "http://www.sap.com/Protocols/SAPData"
+_LOGGER = logging.getLogger(__name__)
 
 
 def _sortable_stable_value(value: Any) -> tuple[int, int, str, str]:
@@ -511,7 +513,26 @@ class EmbeddedODataProvider:
         async with lock:
             if scope and key in self._run_metadata:
                 return self._run_metadata[key]
-            response = await self._request(binding.metadata_path, params={}, accept="application/xml")
+            try:
+                response = await self._request(binding.metadata_path, params={}, accept="application/xml")
+            except SapReadError as exc:
+                transient = exc.code in {"sap_read_timeout", "sap_read_unavailable"} or (
+                    exc.code == "sap_read_http_error"
+                    and isinstance(exc.detail, dict)
+                    and exc.detail.get("http_status") in {502, 503, 504}
+                )
+                if not transient or scope:
+                    raise
+                # Only fixed/default registered metadata GETs retry once.
+                # Scoped Harness callers retain their own retry/read budgets.
+                # Keep authentication, TLS, per-request timeouts and the outer
+                # deadline/cancellation unchanged; never reuse stale metadata.
+                _LOGGER.warning(
+                    "SAP metadata GET retry: service=%s odata=%s error=%s attempt=2",
+                    binding.service_name, binding.odata_version, exc.code,
+                )
+                await asyncio.sleep(0.1)
+                response = await self._request(binding.metadata_path, params={}, accept="application/xml")
             try:
                 detected, parsed = self._parse_metadata(response.text)
             except (ET.ParseError, ValueError) as exc:
@@ -601,9 +622,10 @@ class EmbeddedODataProvider:
                 )
                 schema_fields.setdefault(key, {})[str(field.get("field_name") or "")] = field
 
-        if metadata_failed and self._metadata_scope.get():
-            # Harness must retry the actual access error, not inferred field
-            # absence. Legacy fixed-plan diagnostics remain unchanged.
+        if metadata_failed:
+            # A failed metadata read proves no field absence, in fixed plans
+            # or Harness scopes. Reject with the actual access failure and do
+            # not turn an empty schema map into fabricated drift diagnostics.
             return {"ok": False, "status": "rejected", "validation_issues": issues}
 
         metadata_rules = {

@@ -36,6 +36,17 @@ def replace_block(text: str, key: str, content: str) -> str:
     return f"{before}{start}\n{content.rstrip()}\n{end}{after}"
 
 
+def agent_readme_facts(text: str, content: str) -> str:
+    """Initialize a new Agent's managed facts without rewriting its narrative."""
+    start, end = "<!-- generated:facts:start -->", "<!-- generated:facts:end -->"
+    if start not in text and end not in text:
+        separator = "" if not text or text.endswith("\n\n") else "\n" if text.endswith("\n") else "\n\n"
+        return f"{text}{separator}{start}\n{content.rstrip()}\n{end}\n"
+    # Partial or duplicate existing markers remain an error. Project/module
+    # indexes retain their original strict replace_block contract as well.
+    return replace_block(text, "facts", content)
+
+
 def input_rows(schema: dict, prefix: str = "", inherited_required: bool = True):
     for key, field in schema.get("properties", {}).items():
         if field.get("x-sapba-internal") or field.get("x-sapba-workflow-only"):
@@ -142,7 +153,7 @@ def document_updates(root: Path = ROOT):
     for a in agents:
         path = repo._path(a["slug"]).parent / "README.md"
         text = path.read_text(encoding="utf-8")
-        yield path, replace_block(text, "facts", agent_facts(repo, a, path))
+        yield path, agent_readme_facts(text, agent_facts(repo, a, path))
     workflows = WorkflowRepository(root / "workflows", repo)
     for w in workflows.catalog("all"):
         path = workflows._current_path(w["id"]).parent / "README.md"

@@ -1,5 +1,6 @@
 """One sample-discovery lifecycle and evidence/result gate for every driver."""
 import asyncio
+import copy
 import json
 import time
 
@@ -49,6 +50,12 @@ async def _discover(service, run_id, manifest, supplied_inputs, *, revision, mod
     from .runtime_contract import await_business, drain_cleanup, begin_cleanup, RuntimeContractError
     primary = None
     try:
+        await await_business(_read_singleton_candidate(service, run_id, context, capability),
+                             deadline=context.started + context.max_seconds)
+        if service.store.get_run(run_id).cancel_requested:
+            return adapt(context.result("inconclusive", codes=["sample_discovery_cancelled"]))
+        if context.ready_result:
+            return adapt(context.ready_result)
         text = await await_business(driver.sample_turn(service, run_id, context, capability, binding),
                                     deadline=context.started + context.max_seconds)
         if service.store.get_run(run_id).cancel_requested:
@@ -108,6 +115,71 @@ async def _discover(service, run_id, manifest, supplied_inputs, *, revision, mod
             service._turns.pop(run_id, None)
             service.broker.close_session(run_id)
             service.broker._sample_contexts.pop(run_id, None)
+
+
+def _singleton_candidate_plan(context):
+    """An enum is a search constraint, never evidence that a SAP row exists."""
+    from .sample_discovery import _INPUT
+    missing = context.missing_fields()
+    if len(missing) != 1 or context.scope_graph.active or len(context.plans) != 1:
+        return None
+    name = missing[0]
+    spec = context.properties.get(name, {})
+    values = spec.get("enum")
+    if (spec.get("type") not in {"string", "integer", "number", "boolean"}
+            or not isinstance(values, list) or len(values) != 1):
+        return None
+    candidate = values[0]
+    if list(Draft202012Validator(spec).iter_errors(candidate)):
+        return None
+    declaration = context.plans[0]
+    bindings = [(field, op) for field, bound, op in context._bindings(declaration) if bound == name]
+    if len(bindings) != 1 or bindings[0][1] != "eq":
+        return None
+    plan = copy.deepcopy(declaration)
+    for item in plan.get("filters") or []:
+        if not isinstance(item, dict):
+            return None
+        value = item.get("value")
+        match = _INPUT.fullmatch(str(value or ""))
+        if match:
+            bound = match.group(1)
+            if bound != name and bound not in context.supplied_inputs:
+                return None
+            item["value"] = candidate if bound == name else context.supplied_inputs[bound]
+        elif "{{" in str(value):
+            return None
+    plan["top"] = 1
+    return plan
+
+
+async def _read_singleton_candidate(service, run_id, context, capability):
+    """Use the ordinary authenticated Broker, including scope, budget and audit gates."""
+    from .sample_discovery import SampleDiscoveryError
+    plan = _singleton_candidate_plan(context)
+    if plan is None:
+        return
+    source = tuple(plan[key] for key in ("service_name", "odata_version", "entity_set"))
+    schema = await service.broker.handle(run_id, capability, "sap_schema_get", {
+        "service_name": source[0], "odata_version": source[1], "entity_sets": [source[2]],
+        "max_fields": 5000})
+    if schema.get("ok") is not True or service.store.get_run(run_id).cancel_requested:
+        return
+    keys = context.live_keys.get(source) or []
+    if not keys or not set(keys).issubset(plan.get("select_fields") or []):
+        return
+    plan["order_by"] = list(keys)
+    try:
+        context.check_plan(plan)
+        context.check_stable_keys(plan)
+    except SampleDiscoveryError:
+        return
+    validated = await service.broker.handle(run_id, capability, "sap_query_validate", {"plan": plan})
+    if validated.get("ok") is not True or service.store.get_run(run_id).cancel_requested:
+        return
+    await service.broker.handle(run_id, capability, "sap_query_execute", {
+        "plan": validated.get("validated_plan") or plan})
+    # Only tool_completed's existing evidence-cell validator may set ready_result.
 
 
 def native_sample_allowed(kind, custom_kind):

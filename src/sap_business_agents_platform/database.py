@@ -351,6 +351,14 @@ class RunStore:
                     creation_key TEXT PRIMARY KEY,
                     draft_id TEXT NOT NULL UNIQUE
                 );
+                CREATE TABLE IF NOT EXISTS agent_draft_creation_progress (
+                    creation_key TEXT PRIMARY KEY,
+                    draft_id TEXT NOT NULL UNIQUE,
+                    status TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
                 CREATE TABLE IF NOT EXISTS agent_draft_imports (
                     source_draft_id TEXT PRIMARY KEY,
                     managed_draft_id TEXT NOT NULL UNIQUE,
@@ -2324,6 +2332,55 @@ class RunStore:
                 (key, draft_id),
             )
 
+    def draft_creation_progress(self, key: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT * FROM agent_draft_creation_progress WHERE creation_key = ?", (key,)
+            ).fetchone()
+        return None if row is None else {**dict(row), "payload": json.loads(row["payload_json"])}
+
+    def save_draft_creation_progress(self, key: str, draft_id: str, status: str, payload: dict[str, Any]) -> None:
+        now = utc_now()
+        with self._lock, self._connect() as connection:
+            connection.execute(
+                """INSERT INTO agent_draft_creation_progress VALUES (?, ?, ?, ?, ?, ?)
+                   ON CONFLICT(creation_key) DO UPDATE SET draft_id=excluded.draft_id,
+                   status=excluded.status, payload_json=excluded.payload_json, updated_at=excluded.updated_at""",
+                (key, draft_id, status, json.dumps(payload, ensure_ascii=False), now, now),
+            )
+
+    def retry_failed_draft_creation(self, key: str, draft_id: str) -> bool:
+        with self._lock, self._connect() as connection:
+            cursor = connection.execute(
+                """UPDATE agent_draft_creation_progress SET status='creating', updated_at=?
+                   WHERE creation_key=? AND draft_id=? AND status='failed'""",
+                (utc_now(), key, draft_id),
+            )
+            return cursor.rowcount == 1
+
+    def list_pending_draft_creations(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute(
+                """SELECT * FROM agent_draft_creation_progress
+                   WHERE status IN ('creating', 'generated', 'failed') ORDER BY created_at"""
+            ).fetchall()
+        return [{**dict(row), "payload": json.loads(row["payload_json"])} for row in rows]
+
+    def recover_draft_creations(self) -> None:
+        # Called once by the platform startup recovery boundary. Never replay
+        # an operation whose model execution was interrupted by process exit.
+        with self._lock, self._connect() as connection:
+            rows = connection.execute(
+                "SELECT creation_key, payload_json FROM agent_draft_creation_progress WHERE status='creating'"
+            ).fetchall()
+            for row in rows:
+                payload = json.loads(row["payload_json"])
+                payload["error_code"] = "draft_creation_interrupted"
+                connection.execute(
+                    "UPDATE agent_draft_creation_progress SET status='failed', payload_json=?, updated_at=? WHERE creation_key=?",
+                    (json.dumps(payload, ensure_ascii=False), utc_now(), row["creation_key"]),
+                )
+
     def get_draft_import(self, source_draft_id: str) -> dict[str, Any] | None:
         with self._connect() as connection:
             row = connection.execute(
@@ -2336,6 +2393,10 @@ class RunStore:
             connection.execute(
                 "INSERT INTO agent_draft_imports VALUES (?, ?, ?, ?)",
                 (source_id, managed_id, source_hash, utc_now()),
+            )
+            connection.execute(
+                "UPDATE agent_draft_creation_progress SET status='imported', updated_at=? WHERE draft_id=?",
+                (utc_now(), source_id),
             )
 
     def finish_agent_validation(

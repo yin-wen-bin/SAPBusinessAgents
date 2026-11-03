@@ -235,36 +235,37 @@ class CodexSDKDriver:
                           base_digest=workspace.base_digest)
 
     def workflow_options(self, mode):
-        return {"directory": "workflow-authoring", "snapshot_options": {}}
+        return {"directory": "workflow-authoring", "snapshot_options": {}, "context_only": mode == "restricted"}
 
     async def workflow_turn(self, request, *, workspace, task_id, emit, cleanup_state):
-        from .codex_planner import _tool_authoring_codex, _authoring_preflight_command
+        from .codex_planner import _tool_authoring_codex
+        from .workflow_context_boundary import context_client, attest_context_client
         from .runtime_execution import owned_client, command_preflight
-        from .workflow_authoring_runtime import workflow_preflight, collect_turn, capabilities
+        from .workflow_authoring_runtime import collect_turn, capabilities
         from openai_codex import ApprovalMode as NativeApproval, Sandbox as NativeSandbox
         mode = request.permissions["execution_mode"]
-        client = _tool_authoring_codex(workspace, full_access=mode == "full_access")
+        client = (context_client(workspace.source) if mode == "restricted"
+                  else _tool_authoring_codex(workspace, full_access=True))
+        context_proof = attest_context_client(client) if mode == "restricted" else None
         emit("preflight", {})
         async with owned_client(client, cleanup_timeout=10, cleanup_state=cleanup_state) as codex:
             if mode == "full_access":
                 preflight = await command_preflight(codex, workspace.source)
             else:
-                async def probe(ws, command, *, timeout=30):
-                    return await _authoring_preflight_command(codex, ws, command, timeout=timeout)
-                preflight = await workflow_preflight(workspace, probe)
+                preflight = context_proof
             emit("research", {"preflight": preflight.get("status", "passed")})
             if mode == "full_access":
                 thread = await codex.thread_start(cwd=request.cwd, sandbox=NativeSandbox.full_access,
                     approval_mode=NativeApproval.deny_all, model=self.owner.model,
                     service_name="sapba_workflow_authoring_v2", developer_instructions=request.instructions)
             else:
-                from openai_codex.api import AsyncThread
-                from openai_codex.generated.v2_all import ThreadStartResponse
-                started = await codex._client.request("thread/start", {
-                    "cwd": request.cwd, "permissions": "sapba-authoring", "approvalPolicy": "never",
-                    "model": self.owner.model, "ephemeral": True, "developerInstructions": request.instructions,
-                }, response_model=ThreadStartResponse)
-                thread = AsyncThread(codex, started.thread.id)
+                thread = await codex.thread_start(cwd=request.cwd, sandbox=NativeSandbox.read_only,
+                    approval_mode=NativeApproval.deny_all, model=self.owner.model,
+                    service_name="sapba_workflow_context_authoring_v2",
+                    developer_instructions=request.instructions +
+                        "\nUse only the workflow, catalog and history provided by the platform. "
+                        "Local file, shell, web and MCP tools are unavailable. "
+                        "Ask for missing context instead of inferring facts.")
             options = {"sandbox": NativeSandbox.full_access, "approval_mode": NativeApproval.deny_all,
                        "cwd": request.cwd} if mode == "full_access" else {}
             handle = await thread.turn(request.prompt, output_schema=request.output_schema,
@@ -487,6 +488,7 @@ class CodexHarnessDriver:
         preflight(native_contract.schema)
         from .runtime_execution import owned_client, command_preflight, public_tool_event
         from .runtime_harness import report_tool_completed
+        from contextlib import AsyncExitStack
         from .harness import (_safe_codex, _approval_mode, _sandbox, _event_item,
             _completed_turn_error, _custom_tool_kind, _best_effort_interrupt,
             _public_https_citations, _stream_with_timeout, _last_agent_message)
@@ -502,6 +504,8 @@ class CodexHarnessDriver:
             allow_web=not direct_baseline, full_access=full_access,
         )
         web_search_count = 0
+        broker_tools = None
+        instructions = request.instructions or ''
         self.store.append_event(
             run_id,
             "harness_started",
@@ -514,7 +518,19 @@ class CodexHarnessDriver:
             },
         )
         try:
-            async with owned_client(codex, cleanup_timeout=10, cleanup_state=cleanup_state):
+            async with owned_client(codex, cleanup_timeout=10, cleanup_state=cleanup_state), AsyncExitStack() as tool_cleanup:
+                if direct_baseline and request.binding.get("cli_version", request.binding.get("version")) == "0.163.0":
+                    from .runtime_codex_broker import NativeBrokerTools
+                    broker_tools = NativeBrokerTools(codex, self.broker, run_id, capability,
+                        deadline=request.deadline).install()
+                    tool_cleanup.push_async_callback(broker_tools.aclose)
+                    instructions += (
+                        "\nThis independent baseline has native tools in namespace sapba_broker. "
+                        "They invoke this run's SAME approved Broker, with the same frozen schemas, "
+                        "scope, evidence and report-validation gates. Use these tools directly when "
+                        "MCP is absent; an empty MCP inventory does not mean this native namespace "
+                        "is unavailable. Start with sap_catalog_search. Shell, files, candidate "
+                        "source access, external writes and credentials remain unavailable.\n")
                 if full_access:
                     preflight = await command_preflight(codex, workspace)
                     self.store.append_event(run_id, "runtime_command_preflight", preflight)
@@ -522,7 +538,7 @@ class CodexHarnessDriver:
                     thread = await codex.thread_resume(
                         thread_id,
                         approval_mode=_approval_mode(),
-                        developer_instructions=(request.instructions or '') + native_contract.instructions(),
+                        developer_instructions=instructions + native_contract.instructions(),
                         cwd=str(workspace),
                         model=model,
                         sandbox=_sandbox(full_access=full_access),
@@ -530,7 +546,7 @@ class CodexHarnessDriver:
                 else:
                     thread = await codex.thread_start(
                         approval_mode=_approval_mode(),
-                        developer_instructions=(request.instructions or '') + native_contract.instructions(),
+                        developer_instructions=instructions + native_contract.instructions(),
                         cwd=str(workspace),
                         model=model,
                         sandbox=_sandbox(full_access=full_access),
@@ -620,7 +636,8 @@ class CodexHarnessDriver:
                                     "citations": _public_https_citations(item),
                                 },
                             )
-                    elif item_type == "mcpToolCall":
+                    elif item_type == "mcpToolCall" or (item_type == "dynamicToolCall"
+                            and broker_tools is not None and broker_tools.accepts_item(item)):
                         self.store.append_event(
                             run_id,
                             (

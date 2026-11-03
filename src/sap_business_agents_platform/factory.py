@@ -188,17 +188,34 @@ class AgentDraftService:
                 try:
                     return self.store.get_draft(draft_id)
                 except KeyError as exc:
-                    raise DraftError("Draft generation is already pending; retry the same request later.") from exc
+                    # Retry only a known failed attempt with no partial package.
+                    # Unknown/in-flight work is never dispatched a second time.
+                    if ((self.settings.draft_root / draft_id).exists()
+                            or not self.store.retry_failed_draft_creation(key, draft_id)):
+                        raise DraftError("Draft generation is already pending; retry the same request later.") from exc
             try:
-                return await self._create_from_run(run_id, correction, origin=origin, execution_plan=execution_plan, module=module, draft_id=draft_id)
-            except Exception:
-                if not (self.settings.draft_root / draft_id).exists():
+                result = await self._create_from_run(run_id, correction, origin=origin,
+                    execution_plan=execution_plan, module=module, draft_id=draft_id, creation_key=key)
+                progress = self.store.draft_creation_progress(key)
+                self.store.save_draft_creation_progress(key, draft_id, "generated",
+                    {**progress["payload"], "phase": "awaiting_import"})
+                return result
+            except BaseException as exc:
+                progress = self.store.draft_creation_progress(key)
+                if progress:
+                    code = ("draft_creation_cancelled" if isinstance(exc, asyncio.CancelledError)
+                            else str(getattr(exc, "code", "draft_creation_failed")))
+                    if not re.fullmatch(r"[a-z][a-z0-9_]{0,79}", code):
+                        code = "draft_creation_failed"
+                    self.store.save_draft_creation_progress(key, draft_id, "failed",
+                        {**progress["payload"], "phase": "failed", "error_code": code})
+                elif not (self.settings.draft_root / draft_id).exists():
                     self.store.release_draft_creation(key, draft_id)
                 raise
 
     async def _create_from_run(
         self, run_id: str, correction: str, *, origin: dict[str, Any] | None,
-        execution_plan: dict[str, Any] | None, module: str | None, draft_id: str,
+        execution_plan: dict[str, Any] | None, module: str | None, draft_id: str, creation_key: str,
     ) -> DraftRecord:
         run = self.store.get_run(run_id)
         if run.mode != RunMode.free_query:
@@ -243,6 +260,14 @@ class AgentDraftService:
             "content_en": "Read-only Agent draft. Review semantics, rules, and evidence completeness before publishing.",
             "rule_notes": ["Business owner must define deterministic completion criteria."],
         }
+        # Publish a read-only creation projection before the first model await.
+        # The real package/import still owns editing, readiness and acceptance.
+        self.store.save_draft_creation_progress(creation_key, draft_id, "creating", {
+            "source_run_id": run_id, "source_draft_id": draft_id,
+            "agent_id": slug, "module": manifest["module"],
+            "title": manifest["title"], "target_version": manifest["version"],
+            "phase": "authoring",
+        })
         author_draft = getattr(self.author, "author_draft", None)
         supports = getattr(self.author, "supports", None)
         authoring_supported = not review and (not callable(supports) or bool(supports("author_draft")))
@@ -637,6 +662,7 @@ def _manifest_from_run(
         },
         "status": "Draft",
         "version": "0.1.0",
+        "validation": {"verdict": "NOT_TESTED", "executable": False},
         "owner": "Unassigned",
         "tags": ["Generated draft", "Read-only"],
         "sapModules": ["Common"],

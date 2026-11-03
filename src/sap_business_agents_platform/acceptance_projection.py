@@ -287,9 +287,18 @@ Localized labels remain user friendly; unknown values use an explicit null.
                    for block in blocks for item in block.get("metrics") or []}
         expected_metrics = {**value["metrics"], **{name: value[name] for name in (
             "business_status", "source_complete", "evidence_complete", "business_complete")}}
+        metric_issues = []
         for name, expected_value in expected_metrics.items():
             if name not in metrics or normalized(metrics[name], name in spec.decimal_metrics) != normalized(expected_value, name in spec.decimal_metrics):
-                return [{"code": "acceptance_projection_visible_metrics_mismatch"}]
+                metric_issues.append({"code": "acceptance_projection_visible_metrics_mismatch",
+                    "field": name, "locale": locale, "path": "/report/blocks",
+                    "constraint": "missing_metric" if name not in metrics else "canonical_value_mismatch",
+                    "repair_action": "Render a metrics item with this exact id and the evidence-validated "
+                        "projection value in both value.zh and value.en. Keep raw status identifiers; "
+                        "use lowercase true/false, literal null or exact numeric strings. Do not change "
+                        "the projection, business scope or evidence to make presentation agree."})
+        if metric_issues:
+            return metric_issues
         for gap in value["evidence_gap_codes"]:
             if not any(cell(entry.get("value"), locale) == gap
                        for block in blocks for entry in block.get("entries") or []):

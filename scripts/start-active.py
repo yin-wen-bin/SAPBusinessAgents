@@ -76,6 +76,27 @@ def port_open(port):
         return False
 
 
+def unregistered_changes(root, script):
+    """An informational comparison only; it never approves or executes a change."""
+    try:
+        manifest = read(Path(script).parents[2] / 'manifest.json')
+        for name, expected in manifest['files'].items():
+            path = root / name
+            if (path.is_symlink() or not path.resolve().is_relative_to(root) or not path.is_file()
+                    or hashlib.sha256(path.read_bytes()).hexdigest() != expected):
+                return True
+        for folder in ('src', 'scripts'):
+            for parent, dirs, files in os.walk(root / folder, followlinks=False):
+                dirs[:] = [name for name in dirs if name != '__pycache__']
+                for name in files:
+                    path = Path(parent) / name
+                    if path.suffix in {'.py', '.json'} and path.relative_to(root).as_posix() not in manifest['files']:
+                        return True
+        return False
+    except (OSError, ValueError, KeyError, IndexError, TypeError):
+        return True
+
+
 def initialize_first_install(args, maintenance):
     """Only an uninitialized checkout may execute the first-install entry point."""
     if args.reuse_only or maintenance:
@@ -214,6 +235,33 @@ def main(argv=None):
     if not os.path.lexists(args.root.resolve() / '.local-data/startup-api-current.json'):
         return initialize_first_install(args, maintenance)
     python, script = resolve(args.root.resolve())
+    # A completed verifier publishes this proposal. There is no resident watcher
+    # and no source/environment/admission scan on the no-update fast path.
+    update = args.root.resolve() / '.local-data/startup/verified-update.json'
+    if not update.exists() and not args.reuse_only and maintenance in ([], ['--restart']):
+        if unregistered_changes(args.root.resolve(), script):
+            print('[SAPBusinessAgents] Checkout changes have no matching verification record. '
+                  'They are NOT activated; using the existing active release. Complete code verification first.', flush=True)
+    if update.exists() and not args.reuse_only and maintenance in ([], ['--restart']):
+        value = read(update)
+        expected = (value.get('inputs') or {}).get('scripts/startup-update.py')
+        updater = args.root.resolve() / 'scripts/startup-update.py'
+        if (not expected or updater.is_symlink() or hashlib.sha256(updater.read_bytes()).hexdigest() != expected):
+            raise ValueError('startup_update_verifier_changed_verify_again')
+        module = runpy.run_path(str(updater))
+        value = module['load_record'](args.root, update)
+        current = read(args.root / '.local-data/startup-api-current.json')
+        site = read(args.root / '.local-data/site-builds/current.json')
+        pending = (current['source_digest'] != value['manifest']['digest']
+                   or site['fingerprint'] != value['site_fingerprint'])
+        if pending and not value.get('already_active') and not module['consumed'](args.root.resolve(), value):
+            print('[SAPBusinessAgents] A verified code update is ready; applying it during this startup.', flush=True)
+            command = [str(python), '-I', '-B', str(updater), 'apply', '--root', str(args.root.resolve()),
+                       '--record', str(update), '--port', str(args.port), '--site-port', str(args.site_port),
+                       '--timeout', str(args.timeout)]
+            if args.no_browser: command.append('--no-browser')
+            if maintenance: command.append('--restart')
+            return subprocess.call(command, env={**os.environ, 'PYTHONDONTWRITEBYTECODE': '1'})
     if not maintenance:
         return simple_start(args, python, script)
     if any(value not in {'--restart', '--site-only', '--rebuild', '--dev'} for value in maintenance):

@@ -135,6 +135,8 @@ try { & $skillCheckPython .\scripts\check_environment.py } finally { Pop-Locatio
 
 当前 `main` 源码在安装依赖后，首次普通启动会为没有部署历史的新目录初始化本机 Python 环境绑定、冻结源码、构建前端并生成激活记录；不需要复制其他机器的 `.local-data`、数据库、草稿或报告。启动不会访问 SAP 或调用模型。缺少依赖会提示安装步骤，不会自动安装；已有记录损坏或切换未完成时不会重新初始化覆盖。发布标签使用其随附版本的启动实现。
 
+代码更新经过验证并登记后，正常运行 `start-sap-business-agents.cmd` 即会等待任务空闲，自动构建、切换和核对新版本；`restart-sap-business-agents.cmd` 也支持该流程。没有更新时保持快速启动，不运行常驻监控。自动测试 Agent 在完整复核和文件回写后自动登记；手工开发可运行 `.\.venv\Scripts\python.exe -X utf8 -B scripts\startup-update.py verify --root D:\SAPBusinessAgents` 完成相关启动回归和登记。操作与状态边界见 [启动与更新说明](docs/startup-and-activation.md)。
+
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\Start-SAPBusinessAgents.ps1
 ```

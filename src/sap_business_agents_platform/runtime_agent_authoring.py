@@ -90,6 +90,32 @@ Return JSON only.
     prompt += "\n\n" + authoring_presentation_guidance()
     from .acceptance_contract import authoring_contract_guidance
     prompt += "\n\n" + authoring_contract_guidance()
+    prompt += """
+
+Keep the revision within the user's requested scope. For changes limited to title,
+summary, owner/business domain, SAP component labels or documentation, preserve
+execution, inputs/outputs, managed rules and all package fixtures exactly. An
+existing business-output or acceptance gap remains unresolved and must be reported;
+it is not permission to invent business logic or broaden the requested revision.
+The full business contract guidance applies when the user authorizes behavioral
+changes and before trial, formal acceptance or publication. Saving metadata alone
+does not establish readiness or PASS. Suggest a technical ID in documentation when
+asked, but use the platform's dedicated identity controls to change the actual ID.
+"""
+    if not explain_only:
+        from .authoring_harness import modification_preflight
+        prompt += "\n\nController-observed draft modification preflight:\n" + json.dumps(
+            modification_preflight(package), ensure_ascii=False)
+        prompt += """
+An existing blocker is not permission to broaden this user's request. Pure
+metadata edits keep the existing exact-executable-contract exception. Changes to
+inputs, defaults, filters, rules or outputs must pass the full candidate/save gate.
+If the request cannot resolve a known blocker within its authorized scope, return
+clarify or reply explaining the blocker and necessary separate decision, without
+editing files. Do not return revise_agent with the same unresolved blocker or
+claim that required_changes defers a mandatory save check. Normal investigation,
+editing and local tests remain available for an authorized repair.
+"""
     if tool_workspace:
         prompt += """
 
@@ -221,7 +247,7 @@ def _decode_feedback(raw, package, thread_id, *, tool_workspace=None, explain_on
 
 async def repair_feedback(package, workspace, turn, *, checks):
     """Use the mature controller-owned candidate checks for every SDK."""
-    from .authoring_harness import RepairLoop, check_candidate
+    from .authoring_harness import RepairLoop, check_modification_candidate, modification_preflight
     async def revise(candidate, issues, remaining):
         workspace.write_package(candidate)
         result = await turn(candidate, issues, remaining)
@@ -231,9 +257,9 @@ async def repair_feedback(package, workspace, turn, *, checks):
             result.pop("edits", None)
         return result
     async def check(candidate, remaining):
-        return check_candidate(candidate, package)
+        return check_modification_candidate(candidate, package)
     return await RepairLoop().run(package, revise=revise, check=check,
-        checkpoint=checks.append, assert_current=lambda: None)
+        checkpoint=checks.append, assert_current=lambda: None, preflight=modification_preflight(package))
 
 
 async def run_feedback(planner, *, feedback, locale, package, history=None, thread_id=None,
@@ -280,7 +306,15 @@ async def run_feedback(planner, *, feedback, locale, package, history=None, thre
                     explain_only=intent == "explain",
                     file_package=workspace.read_package(exclude_test_artifacts=True) if workspace else None)
             checks = []
-            decision = await repair_feedback(package, workspace, turn, checks=checks) if workspace and profile["full_access"] else await turn(package)
+            try:
+                decision = await repair_feedback(package, workspace, turn, checks=checks) if workspace and profile["full_access"] else await turn(package)
+            except Exception as error:
+                from .authoring_harness import AuthoringHarnessError, public_checkpoints
+                if isinstance(error, AuthoringHarnessError):
+                    error.detail["harness"] = {"mode": profile["mode"],
+                        "checks": public_checkpoints(checks), "platform_apply": "not_performed",
+                        "live_testing": "not_performed"}
+                raise
             if workspace:
                 decision["harness"] = {"mode": profile["mode"], "workspace_id": workspace.root.name,
                     "base_commit": workspace.base_commit, "preflight": session.get("preflight"),

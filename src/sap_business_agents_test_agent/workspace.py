@@ -10,7 +10,8 @@ from .inventory import source_allowed, source_files
 
 
 def git(root, *args):
-    result = subprocess.run(["git", "-c", "core.longpaths=true", "-c", "core.hooksPath=.git/hooks", *args], cwd=root, capture_output=True, timeout=90)
+    result = subprocess.run(["git", "-c", "core.longpaths=true", "-c", "core.hooksPath=.git/hooks", *args],
+                            cwd=root, stdin=subprocess.DEVNULL, capture_output=True, timeout=90)
     if result.returncode:
         raise TestAgentError("snapshot_git_failed", operation=args[0])
     return result.stdout.decode("utf-8").strip()
@@ -119,6 +120,16 @@ def apply_patch(store, task_id):
             write_json(journal_path, journal)
             raise
         task["application"] = {"status": "applied", "paths": sorted(patch), "at": now()}
+        # A proposal is not deployment authority. Ordinary startup consumes it
+        # through the existing activation controller after its own idle checks.
+        from .startup_update import register_application
+        try:
+            task["application"]["startup_update"] = register_application(store, task)
+        except Exception as error:
+            task["application"]["startup_update"] = {
+                "status": "blocked", "code": "startup_update_registration_failed",
+                "reason": str(getattr(error, "code", type(error).__name__)),
+            }
         store.put("task", task_id, task, db)
         store.event(task_id, "patch_applied", task["application"], db)
         return task["application"]

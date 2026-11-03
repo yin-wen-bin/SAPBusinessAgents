@@ -323,7 +323,56 @@ def request(url, timeout=2):
         return json.loads(response.read())
 
 
+def tcp_listener_rows(raw, family):
+    """Parse only the OS-filtered OWNER_PID_LISTENER table, never connections."""
+    import struct
+    size, port_offset, pid_offset = (24, 8, 20) if family == socket.AF_INET else (56, 20, 52)
+    if len(raw) < 4:
+        raise OSError('startup_listener_table_invalid')
+    count = struct.unpack_from('<I', raw)[0]
+    if count > (len(raw) - 4) // size:
+        raise OSError('startup_listener_table_invalid')
+    return [(socket.ntohs(struct.unpack_from('<I', raw, 4 + i*size + port_offset)[0] & 65535),
+             struct.unpack_from('<I', raw, 4 + i*size + pid_offset)[0]) for i in range(count)]
+
+
+def windows_listeners():
+    """OS-observed owners, including hosts whose netstat omits LISTENING rows."""
+    import ctypes
+    from ctypes import wintypes as w
+    api = ctypes.WinDLL('iphlpapi', use_last_error=True).GetExtendedTcpTable
+    api.argtypes = [w.LPVOID, ctypes.POINTER(w.DWORD), w.BOOL, w.ULONG, w.ULONG, w.ULONG]
+    api.restype = w.DWORD
+    owners = {}
+    for family in (socket.AF_INET, socket.AF_INET6):
+        size = w.DWORD(0)
+        # TCP_TABLE_OWNER_PID_LISTENER=3 filters at the OS boundary. Some
+        # Windows hosts redact the row's state field even in this filtered table.
+        error = api(None, ctypes.byref(size), False, family, 3, 0)
+        if error not in (0, 122):
+            raise OSError(error, 'startup_listener_inventory_unavailable')
+        for _ in range(3):
+            if not 4 <= size.value <= 16*1024*1024:
+                raise OSError('startup_listener_table_invalid')
+            buffer = ctypes.create_string_buffer(size.value)
+            error = api(buffer, ctypes.byref(size), False, family, 3, 0)
+            if error != 122:
+                break
+        if error:
+            raise OSError(error, 'startup_listener_inventory_unavailable')
+        for port, pid in tcp_listener_rows(buffer.raw, family):
+            owners.setdefault(port, set()).add(pid)
+    # Shared/reused port numbers with different owners are ambiguous. PID zero
+    # is deliberately rejected by the existing process identity checks.
+    return {port: next(iter(pids)) if len(pids) == 1 else 0 for port, pids in owners.items()}
+
+
 def listeners():
+    if os.name == 'nt':
+        try:
+            return windows_listeners()
+        except OSError:
+            pass  # The fallback still cannot authorize an unknown process.
     result = subprocess.run([str(Path(os.environ["SystemRoot"]) / "System32/netstat.exe"), "-ano", "-p", "TCP"], capture_output=True, text=True, check=True)
     return {int(parts[1].rsplit(":", 1)[1]): int(parts[-1]) for line in result.stdout.splitlines() if len(parts := line.split()) == 5 and parts[0] == "TCP" and parts[3] == "LISTENING"}
 
@@ -1512,6 +1561,8 @@ def activate_code(args):
         actual=json.loads((args.root/'.local-data/startup-api-current.json').read_bytes())
         if actual['source_digest'] not in {current['source_digest'],target['source_digest']}:
             raise control.StartupBlocked('startup_activation_base_changed')
+        if getattr(args, 'verified_update_check', None):
+            args.verified_update_check()
     args.check_operation=unchanged
     return ensure(args)
 

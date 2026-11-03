@@ -17,7 +17,7 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 from .config import Settings
 from .database import RunStore
-from .engine import RunCoordinator
+from .engine import RunCoordinator, RunExecutionError
 from .models import RunStatus, TERMINAL_STATUSES, WorkflowDraftRecord, utc_now
 from .workflow_composer import (
     WORKFLOW_COMPILER_VERSION,
@@ -26,6 +26,7 @@ from .workflow_composer import (
     compile_workflow_proposal,
     gap_free_query_prompt,
 )
+from .workflow_review_input import missing_input as _validation_input_is_missing, validation_input_metadata
 from .workflows import (
     WORKFLOW_REVIEW_POLICY_VERSION,
     WorkflowError,
@@ -65,6 +66,28 @@ def _draft_status_for_gaps(composition: dict[str, Any]) -> str:
     if gaps:
         return "needs_integrations"
     return "draft"
+
+
+def _check_draft_boundary(workflow: dict[str, Any]) -> None:
+    """Reject unsupported execution and ambiguous nodes before persistence.
+
+    An empty canvas and incomplete port bindings remain editable. Full graph
+    and business-contract validation still runs at design/live-validation gates.
+    """
+    if workflow.get("mode") != "deterministic" or workflow.get("readOnly") is not True:
+        raise WorkflowDraftError("Workflow drafts must be deterministic and readOnly=true.",
+                                 code="workflow_draft_boundary_invalid")
+    nodes = workflow.get("nodes")
+    if not isinstance(nodes, list):
+        raise WorkflowDraftError("Workflow draft nodes must be an array.",
+                                 code="workflow_draft_boundary_invalid")
+    identities: set[str] = set()
+    for node in nodes:
+        node_id = node.get("id") if isinstance(node, dict) else None
+        if not isinstance(node_id, str) or not node_id.strip() or node_id in identities:
+            raise WorkflowDraftError("Workflow draft node IDs must be non-empty and unique.",
+                                     code="workflow_draft_boundary_invalid")
+        identities.add(node_id)
 
 
 class WorkflowDraftService:
@@ -128,6 +151,7 @@ class WorkflowDraftService:
             "policies": {"onInconclusive": "continue_if_required_outputs_present"},
         }
         value = normalize_workflow(value, self.agents)
+        _check_draft_boundary(value)
         draft_dir = (self.settings.draft_root / "workflows" / draft_id).resolve()
         expected_root = (self.settings.draft_root / "workflows").resolve()
         if expected_root not in draft_dir.parents:
@@ -1025,6 +1049,7 @@ class WorkflowDraftService:
                 detail={"expected": expected_revision, "actual": current.revision},
             )
         normalized = normalize_workflow(workflow, self.agents)
+        _check_draft_boundary(normalized)
         diff = _json_diff(current.workflow, normalized)
         if not diff:
             return current
@@ -1126,6 +1151,19 @@ class WorkflowDraftService:
                     "Confirm the current workflow design before live validation.",
                     code="workflow_design_confirmation_required",
                 )
+        # Reject invalid caller contracts before replacing the last report or
+        # clearing its acceptance. A rejected request is not a new validation.
+        validated_expectations = _validate_expectation_contracts(
+            current.workflow, expectations or []
+        )
+        integration_owned_inputs = _integration_owned_input_ports(current.workflow)
+        overridden_inputs = sorted(integration_owned_inputs.intersection(supplied_input))
+        if overridden_inputs:
+            raise WorkflowDraftError(
+                "Runtime integration inputs cannot be supplied by the caller.",
+                code="workflow_integration_input_override",
+                detail={"fields": overridden_inputs},
+            )
         draft = self.validate_structure(draft_id)
         if draft.validation.get("valid") is not True:
             raise WorkflowDraftError(
@@ -1133,9 +1171,6 @@ class WorkflowDraftService:
                 code="workflow_validation_failed",
                 detail=draft.validation,
             )
-        validated_expectations = _validate_expectation_contracts(
-            draft.workflow, expectations or []
-        )
         turn: int | None = None
         state = self._conversation_state(draft)
         if state:
@@ -1155,29 +1190,15 @@ class WorkflowDraftService:
             state["active_validation_turn"] = turn
             draft.composition["conversation"] = state
             self.store.save_workflow_draft(draft)
-        integration_owned_inputs = _integration_owned_input_ports(draft.workflow)
-        overridden_inputs = sorted(integration_owned_inputs.intersection(supplied_input))
-        if overridden_inputs:
-            raise WorkflowDraftError(
-                "Runtime integration inputs cannot be supplied by the caller.",
-                code="workflow_integration_input_override",
-                detail={"fields": overridden_inputs},
-            )
         required_inputs = [
             str(item) for item in draft.workflow.get("inputSchema", {}).get("required") or []
             if str(item) not in integration_owned_inputs
         ]
         review_contract = workflow_review_contract(draft.workflow, self.agents)
-        validation_input_shape = {
-            name: (
-                "<auto_discover>"
-                if _validation_input_is_missing(supplied_input.get(name)) and auto_discover
-                else "<provided>"
-                if not _validation_input_is_missing(supplied_input.get(name))
-                else "<missing>"
-            )
-            for name in sorted(set(required_inputs).union(supplied_input))
-        }
+        validation_input_shape = validation_input_metadata(
+            draft.workflow.get("inputSchema", {}), supplied_input, required_inputs,
+            auto_discover=auto_discover,
+        )
         review_workflow = getattr(self.author, "review_workflow", None)
         if not callable(review_workflow):
             self._fail_runtime_review(
@@ -1309,6 +1330,10 @@ class WorkflowDraftService:
             draft.updated_at = utc_now()
             self._write_draft(draft)
             self.store.save_workflow_draft(draft)
+            if isinstance(exc, RunExecutionError):
+                raise WorkflowDraftError(
+                    str(exc), code=exc.code, detail=exc.detail,
+                ) from exc
             raise
         self.store.append_event(
             run_id,
@@ -2426,16 +2451,6 @@ def _workflow_binding_catalog(workflow: dict[str, Any]) -> dict[str, Any]:
             }
         )
     return {"digest": "published-binding-snapshot", "items": [], "bindings": bindings}
-
-
-def _validation_input_is_missing(value: Any) -> bool:
-    if value is None:
-        return True
-    if isinstance(value, str):
-        return not value.strip()
-    if isinstance(value, (list, tuple, set, dict)):
-        return len(value) == 0
-    return False
 
 
 def _validate_expectation_contracts(

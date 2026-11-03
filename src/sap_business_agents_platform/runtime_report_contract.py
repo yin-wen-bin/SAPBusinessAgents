@@ -88,8 +88,25 @@ def tool_schema(spec=None):
     if spec is not None:
         from .acceptance_projection import AcceptanceProjectionSpec, projection_schema
         properties["acceptance_projection"] = projection_schema(AcceptanceProjectionSpec.model_validate(spec))
+        properties["report"]["description"] = acceptance_display_instructions()
     return {"type": "object", "additionalProperties": False, "properties": properties,
         "required": ["report", *(["acceptance_projection"] if spec is not None else [])]}
+
+
+def acceptance_display_instructions() -> str:
+    """Value-free rendering rules shared by acceptance requests and repair feedback."""
+    return (
+        "In an acceptance report, render every acceptance_projection.metrics key as a visible "
+        "metrics item with that exact id. ALSO render the four projection root fields as visible "
+        "metrics items with exact ids business_status, source_complete, evidence_complete, "
+        "business_complete. Merely including these fields in acceptance_projection, a table "
+        "column, or block completeness does not satisfy this visible-metrics contract. "
+        "Use friendly bilingual labels, but value.zh and value.en must both contain the same "
+        "canonical value: raw status identifier, lowercase true/false for booleans, literal null "
+        "for unknown, and exact numeric strings for numeric metrics. Do not translate these "
+        "values or add units. Derive all conclusions from this run's owned evidence; rendering "
+        "a projection value does not prove it or permit changing an unknown flag to true."
+    )
 
 
 def instructions(*, acceptance: bool = False) -> str:
@@ -146,7 +163,8 @@ def instructions(*, acceptance: bool = False) -> str:
         "Business prose/tables are not arithmetic proofs even when all metric bindings pass. "
         "Use financial_verification_details to understand the scope; never claim the full report is verified. "
           "Do not recompute money in prose or present unverified amounts as verified. "
-        + ("Acceptance projection is required only under this run's frozen acceptance contract."
+        + ("Acceptance projection is required only under this run's frozen acceptance contract. "
+           + acceptance_display_instructions()
            if acceptance else "Ordinary queries must omit acceptance_projection entirely.")
     )
 

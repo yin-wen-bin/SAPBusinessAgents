@@ -138,6 +138,9 @@ async function request(url: string, init?: RequestInit) {
 
 export default function AgentManagementCenter({ apiBase, locale, runPath, askPath }: Props) {
   const t = text[locale];
+  const creationText = locale === "zh"
+    ? { creating: "正在生成草稿", failed: "草稿生成失败", source: "查看来源与创建进度", noRevision: "尚未生成修订" }
+    : { creating: "Generating draft", failed: "Draft generation failed", source: "View source and creation progress", noRevision: "No revision yet" };
   const [, renderResources] = useState(0);
   const loadersRef = useRef<{ catalog: CatalogResource; drafts: ListResource } | null>(null);
   if (!loadersRef.current) {
@@ -188,7 +191,7 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
     let failures = 0;
     const schedule = () => {
       clearTimeout(timer);
-      if (stopped || document.hidden || !loaders.drafts.state.data.some((item) => item.status === "validating")) return;
+      if (stopped || document.hidden || !loaders.drafts.state.data.some((item) => ["creating", "validating"].includes(item.status))) return;
       timer = setTimeout(async () => {
         await loaders.drafts.refresh();
         failures = loaders.drafts.state.error ? failures + 1 : 0;
@@ -209,22 +212,21 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
       clearTimeout(timer);
       await Promise.allSettled([loaders.catalog.refresh(force),
         force || !loaders.drafts.state.loaded || !loaders.drafts.state.updatedAt || Date.now() - loaders.drafts.state.updatedAt >= 60000
-          ? loaders.drafts.refresh() : Promise.resolve()]);
+          ? loaders.drafts.refresh(force) : Promise.resolve()]);
       catalogAttempt = 0;
       scheduleCatalog();
       schedule();
     };
     refreshRef.current = refresh;
     retrySourceRef.current = async (name) => {
-      if (name === 'catalog') await loaders.catalog.refresh(true); else await loaders.drafts.refresh();
+      if (name === 'catalog') await loaders.catalog.refresh(true); else await loaders.drafts.refresh(true);
       catalogAttempt = 0; scheduleCatalog(); schedule();
     };
-    const onFocus = () => { if (!document.hidden) void refresh(); };
+    const onFocus = () => { if (!document.hidden) void refresh(true); };
     const onVisibility = () => {
       if (document.hidden) { clearTimeout(timer); clearTimeout(catalogTimer); loaders.catalog.dispose(); loaders.drafts.dispose(); }
       else {
-        if (loaders.drafts.state.data.some((item) => item.status === 'validating')) loaders.drafts.state.updatedAt = null;
-        void refresh();
+        void refresh(true);
       }
     };
     window.addEventListener("focus", onFocus);
@@ -535,12 +537,14 @@ export default function AgentManagementCenter({ apiBase, locale, runPath, askPat
           <div className="agent-list-row">
             <div data-label={t.module}>{item.module || "—"}</div>
             <div className="agent-list-identity" data-label={t.agent}><strong>{localized(item.title, locale) || item.agent_id || item.id}</strong>{item.summary && <span>{localized(item.summary, locale)}</span>}<code>{item.agent_id || item.id}</code>{item.kind === "draft" && <small>{t.draftSource}: {mappedLabel(t.sourceLabels, item.source_type)} · {t.updatedAt}: {formattedDate(item.updated_at, locale)}</small>}</div>
-            <div data-label={t.version}>{item.kind === "draft" ? item.target_version || "—" : item.version || "—"}{item.kind === "draft" && <small>{t.targetVersion} · {t.revision} {item.revision}</small>}</div>
-            <div data-label={t.state}><span className="agent-list-status">{mappedLabel(t.statusLabels, item.state)}</span>{item.kind === "draft" && <small>{mappedLabel(t.statusLabels, item.status)}</small>}</div>
+            <div data-label={t.version}>{item.kind === "draft" ? item.target_version || "—" : item.version || "—"}{item.kind === "draft" && <small>{item.creation_pending ? creationText.noRevision : <>{t.targetVersion} · {t.revision} {item.revision}</>}</small>}</div>
+            <div data-label={t.state}><span className="agent-list-status">{mappedLabel(t.statusLabels, item.state)}</span>{item.kind === "draft" && <small>{item.creation_pending ? item.status === "creating" ? creationText.creating : creationText.failed : mappedLabel(t.statusLabels, item.status)}</small>}</div>
             <div data-label={t.validation}>{mappedLabel(t.statusLabels, item.acceptance)}{item.sync_error && <small role="status">{t.syncError}</small>}</div>
             <div className="agent-list-actions" data-label={t.actions}>
-              <button onClick={() => { if (item.kind === "draft") void openDraft(item.draft_id, draftPrimaryStep(item)); else { void openAgent(item); history.pushState({}, "", `${window.location.pathname}?agent=${encodeURIComponent(item.id)}`); } }}>{item.kind !== "draft" ? t.view : item.active_operation && ["queued", "running", "cancelling"].includes(item.active_operation.status) ? t.viewProgress : item.wizard?.recommended_step === "publish" && item.wizard?.steps?.publish === "available" ? t.reviewPublish : Object.values(item.wizard?.steps || {}).includes("needs_action") ? t.handleIssue : t.continueDraft}</button>
-              {item.kind === "draft" && <button className="agent-danger-action" disabled={busy || !item.management?.can_delete} title={(item.management?.delete_blockers || []).join(", ")} onClick={() => { setDeleteCandidate(item); setDraftConfirmId(""); setError(""); }}>{t.deleteDraft}</button>}
+              {item.creation_pending
+                ? <a href={`${runPath}?run=${encodeURIComponent(item.metadata.source_run_id)}`}>{creationText.source}</a>
+                : <button onClick={() => { if (item.kind === "draft") void openDraft(item.draft_id, draftPrimaryStep(item)); else { void openAgent(item); history.pushState({}, "", `${window.location.pathname}?agent=${encodeURIComponent(item.id)}`); } }}>{item.kind !== "draft" ? t.view : item.active_operation && ["queued", "running", "cancelling"].includes(item.active_operation.status) ? t.viewProgress : item.wizard?.recommended_step === "publish" && item.wizard?.steps?.publish === "available" ? t.reviewPublish : Object.values(item.wizard?.steps || {}).includes("needs_action") ? t.handleIssue : t.continueDraft}</button>}
+              {item.kind === "draft" && !item.creation_pending && <button className="agent-danger-action" disabled={busy || !item.management?.can_delete} title={(item.management?.delete_blockers || []).join(", ")} onClick={() => { setDeleteCandidate(item); setDraftConfirmId(""); setError(""); }}>{t.deleteDraft}</button>}
             </div>
           </div>
           {deleteCandidate?.draft_id === item.draft_id && item.kind === "draft" && <div className="agent-draft-delete-confirm"><p>{t.deleteDraftWarning}</p><label>{t.confirmDraftId}<input value={draftConfirmId} onChange={(event) => setDraftConfirmId(event.target.value)} autoComplete="off" /></label><div className="agent-actions"><button className="agent-secondary-action" disabled={busy} onClick={() => { setDeleteCandidate(null); setDraftConfirmId(""); }}>{t.cancel}</button><button className="agent-danger-action solid" disabled={busy || draftConfirmId !== item.agent_id} onClick={() => deleteDraft(item)}>{t.deleteDraft}</button></div></div>}

@@ -27,9 +27,13 @@ OUTPUT_SCHEMA = {
 }
 
 
-def instructions():
+def instructions(*, context_only=False):
     return (
-        "Work only on this isolated workflow snapshot. Inspect files and run local tests as needed. "
+        ("Use only the provided workflow context, catalog, history and references. "
+         "No local file, shell, web or MCP tools are exposed. Request missing context from the user. "
+         if context_only else
+         "Work only on this isolated workflow snapshot. Inspect files and run local tests as needed. ")
+        +
         "Return only a canonical workflow JSON candidate, never a proposal that recompiles bindings. "
         "Preserve saved layout, conditions, Agent versions/digests and connection/schema bindings unless "
         "the user explicitly requested changes; describe any binding changes. No SAP, mail sending, "
@@ -97,7 +101,7 @@ async def _run(planner, *, workflow, message, intent, execution_mode, history, c
             "model": planner.model, "reasoning_effort": planner.reasoning_effort},
         prompt(intent=intent, message=message, workflow=workflow, history=history,
             catalog=catalog, references=references, allowed_paths=allowed_paths), OUTPUT_SCHEMA,
-        cwd=str(workspace.source), instructions=instructions(),
+        cwd=str(workspace.source), instructions=instructions(context_only=settings.get("context_only", False)),
         permissions={"execution_mode": execution_mode}, deadline=deadline)
     request.remaining()
     if request.deadline is None:

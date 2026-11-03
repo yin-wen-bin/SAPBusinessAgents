@@ -313,23 +313,21 @@ function PublishedWorkflowCatalog({
   const [reloadToken, setReloadToken] = useState(0);
 
   useEffect(() => {
-    let cancelled = false;
+    const owner = new AbortController();
+    const signal = owner.signal;
     setLoading(true);
-    Promise.all([
-      fetch(`${apiBase}/api/workflows/catalog?state=all`),
-      fetch(`${apiBase}/api/agents`),
-    ]).then(async ([catalogResponse, agentResponse]) => {
-      if (!catalogResponse.ok) throw new Error(t.loadFailed);
-      const catalog = await catalogResponse.json() as CatalogItem[];
-      const availableAgents = agentResponse.ok ? await agentResponse.json() as AgentDefinition[] : [];
-      if (!cancelled) {
-        setItems(catalog);
-        setAgents(availableAgents);
-        setError("");
-      }
-    }).catch(() => { if (!cancelled) setError(t.loadFailed); })
-      .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
+    // Published cards depend on their own persisted catalog, not Agent metadata latency.
+    void fetch(`${apiBase}/api/workflows/catalog?state=all`, { signal }).then(async response => {
+      if (!response.ok) throw new Error(t.loadFailed);
+      const catalog = await response.json() as CatalogItem[];
+      if (!signal.aborted) { setItems(catalog); setError(""); }
+    }).catch(() => { if (!signal.aborted) setError(t.loadFailed); })
+      .finally(() => { if (!signal.aborted) setLoading(false); });
+    void fetch(`${apiBase}/api/agents`, { signal }).then(async response => {
+      const availableAgents = response.ok ? await response.json() as AgentDefinition[] : [];
+      if (!signal.aborted) setAgents(availableAgents);
+    }).catch(() => { if (!signal.aborted) setAgents([]); });
+    return () => { owner.abort(); };
   }, [apiBase, reloadToken, t.loadFailed]);
 
   useEffect(() => {

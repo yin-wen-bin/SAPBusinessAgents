@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -51,6 +52,14 @@ class WorkflowRepository:
         ]
 
     def catalog(self, state: str = "active") -> list[dict[str, Any]]:
+        # A display request may revisit workflows for dependency blockers. Keep
+        # its validated reads local; execution/deletion continue fresh reads.
+        reader = _WorkflowCatalogRead(self)
+        result = reader._catalog(state)
+        reader.finish()
+        return result
+
+    def _catalog(self, state: str = "active") -> list[dict[str, Any]]:
         if state not in {"active", "inactive", "all"}:
             raise WorkflowError(
                 "Workflow catalog state must be active, inactive, or all.",
@@ -303,6 +312,44 @@ class WorkflowRepository:
         except (OSError, json.JSONDecodeError):
             return {}
         return payload if isinstance(payload, dict) else {}
+
+
+class _WorkflowCatalogRead(WorkflowRepository):
+    """One request only; no persistent qualification or execution cache."""
+
+    def __init__(self, repository: WorkflowRepository) -> None:
+        super().__init__(repository.root, repository.agents, repository.store)
+        self._paths = sorted(self.root.glob("*/*/workflow.json"))
+        self._loaded: dict[tuple[Path, bool], dict[str, Any]] = {}
+        self._inputs: dict[Path, bytes] = {}
+
+    @staticmethod
+    def _changed() -> WorkflowError:
+        return WorkflowError("Workflow catalog changed while reading; retry the read.",
+                             code="workflow_catalog_source_changed")
+
+    def _load(self, path: Path, *, require_pins: bool = True) -> dict[str, Any]:
+        key = (path, require_pins)
+        if key not in self._loaded:
+            try:
+                before = path.read_bytes()
+                value = super()._load(path, require_pins=require_pins)
+                if path.read_bytes() != before:
+                    raise self._changed()
+            except OSError as exc:
+                raise self._changed() from exc
+            self._inputs[path] = before
+            self._loaded[key] = value
+        return copy.deepcopy(self._loaded[key])
+
+    def finish(self) -> None:
+        if sorted(self.root.glob("*/*/workflow.json")) != self._paths:
+            raise self._changed()
+        try:
+            if any(path.read_bytes() != content for path, content in self._inputs.items()):
+                raise self._changed()
+        except OSError as exc:
+            raise self._changed() from exc
 
 
 class WorkflowManagementService:

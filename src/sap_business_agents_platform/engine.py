@@ -2591,6 +2591,9 @@ class RunCoordinator:
             trace = _plugin_trace(self.sap_read, "sap_read.v2", str(operation or ""))
             candidate_plan = rendered.get("plan") if isinstance(rendered.get("plan"), dict) else rendered
             normalized_plan = self.normalizer.normalize_plan(candidate_plan)
+            if operation == "execute_plan":
+                from .deterministic_projection import retain_account_item_dimensions
+                normalized_plan = retain_account_item_dimensions(normalized_plan)
             if isinstance(rendered.get("plan"), dict):
                 rendered["plan"] = normalized_plan
             else:
@@ -6858,18 +6861,41 @@ def _step_execution_envelope(
         "not_requested": "not_requested",
         "not_applicable": "not_applicable",
     }
-    rows = payload.get("rows")
-    if not isinstance(rows, list):
-        rows = payload.get("receipts") if isinstance(payload.get("receipts"), list) else []
-    nested_rows: list[dict[str, Any]] = []
+    def source_rows(value: Any) -> tuple[bool, list[dict[str, Any]]]:
+        if isinstance(value, dict):
+            # Provider query diagnostics can repeat the canonical data.results.
+            # Select that collection, including an explicit empty collection;
+            # never remove legitimate duplicate records by comparing values.
+            for key in ("rows", "receipts", "results"):
+                if isinstance(value.get(key), list):
+                    return True, [item for item in value[key] if isinstance(item, dict)]
+            if isinstance(value.get("data"), dict):
+                found, collected = source_rows(value["data"])
+                if found:
+                    return True, collected
+            found, collected = False, []
+            for key, child in value.items():
+                if key == "data":
+                    continue
+                present, records = source_rows(child)
+                found = found or present
+                collected.extend(records)
+            return found, collected
+        if isinstance(value, list):
+            found, collected = False, []
+            for child in value:
+                present, records = source_rows(child)
+                found = found or present
+                collected.extend(records)
+            return found, collected
+        return False, []
+
+    _, rows = source_rows(payload)
     nested_failures: list[Any] = []
     nested_issues: list[dict[str, Any]] = []
 
     def inspect(value: Any) -> None:
         if isinstance(value, dict):
-            results = value.get("results")
-            if isinstance(results, list):
-                nested_rows.extend(item for item in results if isinstance(item, dict))
             nested_failures.extend(value.get("failed_filter_values") or [])
             nested_issues.extend(
                 item for item in value.get("validation_issues") or [] if isinstance(item, dict)
@@ -6881,8 +6907,6 @@ def _step_execution_envelope(
                 inspect(child)
 
     inspect(payload)
-    if not rows:
-        rows = nested_rows
     evidence_status = status_map.get(
         raw_status, "available" if execution_status == "completed" else "unavailable"
     )

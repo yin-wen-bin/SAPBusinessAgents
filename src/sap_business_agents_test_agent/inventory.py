@@ -49,7 +49,8 @@ OPERATION_TITLES = {
     "download": "下载结果", "restricted-evidence": "受限证据访问",
 }
 SOURCE_ROOTS = {"src", "tests", "site", "agents", "workflows", "config", "data", "scripts", "skills", "docs"}
-ROOT_FILES = {"pyproject.toml", "README.md", "SECURITY.md", ".gitignore", ".gitattributes"}
+ROOT_FILES = {"pyproject.toml", "README.md", "SECURITY.md", ".gitignore", ".gitattributes",
+              "start-sap-business-agents.cmd", "restart-sap-business-agents.cmd", "requirements.lock", "uv.lock"}
 EXCLUDED = {".git", ".local-data", ".prototype", ".codex", ".agents", ".aws", "node_modules", ".venv", "dist", ".astro", "__pycache__", ".pytest_cache", "generated"}
 
 
@@ -64,7 +65,7 @@ def source_allowed(name):
 def source_files(root):
     root = Path(root).resolve()
     result = subprocess.run(["git", "-c", "core.longpaths=true", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
-                            cwd=root, capture_output=True, timeout=30)
+                            cwd=root, stdin=subprocess.DEVNULL, capture_output=True, timeout=30)
     if result.returncode:
         raise TestAgentError("repository_unavailable")
     values, verified_parents = {}, set()

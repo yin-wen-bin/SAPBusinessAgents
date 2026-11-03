@@ -162,7 +162,7 @@ const stageState = (item: any, target: string, terminal: boolean, locale: Locale
     const result = item.result || {};
     const stage = target === "comparing" ? null : result[target === "free_query" ? "free_query" : target === "fixed_agent" ? "fixed_agent" : "baseline"];
     const verified = target === "comparing" ? Boolean(result.fixed_agent?.comparison)
-      : target === "baseline" ? Boolean(stage?.result_hash) : stage?.status === "completed";
+      : target === "baseline" ? Boolean(stage?.result_hash) : stage?.status === "completed" || ["MATCH", "MISMATCH"].includes(stage?.comparison?.verdict);
     if (verified) return locale === "zh" ? "已完成" : "Completed";
     if (!terminal && item.phase === target) return locale === "zh" ? "执行中" : "Running";
     const runKey = ({ baseline: "baseline_run_id", free_query: "free_query_run_id", fixed_agent: "fixed_agent_run_id" } as Record<string, string>)[target];

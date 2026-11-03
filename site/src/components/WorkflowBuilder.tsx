@@ -14,6 +14,7 @@ import {
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import WorkflowAssistant from "./WorkflowAssistant";
+import { createWorkflowRefresh } from "../lib/workflowRefresh";
 import { workflowAnnotationHost, workflowConnectionKey } from "../lib/workflowAnnotationHost";
 import type {
   AgentDefinition,
@@ -446,6 +447,8 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
   const t = labels[locale];
   const [agents, setAgents] = useState<AgentDefinition[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null);
+  const [restoringDraft, setRestoringDraft] = useState(false);
+  const [restoreFailed, setRestoreFailed] = useState(false);
   const [requirement, setRequirement] = useState("");
   const [clarificationInput, setClarificationInput] = useState("");
   const [advanced, setAdvanced] = useState(false);
@@ -489,9 +492,12 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
     setDirty(false);
   }, []);
 
-  const refreshConversation = useCallback(async (draftId: string) => {
-    const response = await fetch(`${apiBase}/api/authoring/workflows/${encodeURIComponent(draftId)}/conversation`);
-    if (response.ok) setConversation((await response.json()) as WorkflowConversation);
+  const refreshConversation = useCallback(async (draftId: string, signal?: AbortSignal) => {
+    const response = await fetch(`${apiBase}/api/authoring/workflows/${encodeURIComponent(draftId)}/conversation`, { signal });
+    if (response.ok) {
+      const value = (await response.json()) as WorkflowConversation;
+      if (!signal?.aborted) setConversation(value);
+    }
   }, [apiBase]);
 
   const stopPolling = useCallback(() => {
@@ -515,86 +521,91 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
     history.replaceState({}, "", `${window.location.pathname}?${query.toString()}`);
   }, []);
 
-  const refreshValidation = useCallback(async (value: Draft) => {
-    if (!value.validation_run_id) {
-      setLiveRun(null);
-      setValidationReport(null);
-      return;
-    }
-    const runResponse = await fetch(`${apiBase}/api/runs/${encodeURIComponent(value.validation_run_id)}`);
-    if (runResponse.ok) setLiveRun((await runResponse.json()) as RunSnapshot);
-    const reportResponse = await fetch(`${apiBase}/api/authoring/workflows/${encodeURIComponent(value.draft_id)}/validation-report`);
-    if (reportResponse.ok) setValidationReport((await reportResponse.json()) as ValidationReport);
+  const refreshValidation = useCallback(async (value: Draft, signal?: AbortSignal) => {
+    if (signal?.aborted) return;
+    if (!value.validation_run_id) { setLiveRun(null); setValidationReport(null); return; }
+    const [runResponse, reportResponse] = await Promise.all([
+      fetch(`${apiBase}/api/runs/${encodeURIComponent(value.validation_run_id)}`, { signal }),
+      fetch(`${apiBase}/api/authoring/workflows/${encodeURIComponent(value.draft_id)}/validation-report`, { signal }),
+    ]);
+    const run = runResponse.ok ? (await runResponse.json()) as RunSnapshot : null;
+    const report = reportResponse.ok ? (await reportResponse.json()) as ValidationReport : null;
+    if (signal?.aborted) return;
+    if (run) setLiveRun(run);
+    if (report) setValidationReport(report);
   }, [apiBase]);
 
+  const refreshReads = useMemo(() => createWorkflowRefresh(() => setMessage(locale === "zh"
+    ? "更新工作流状态失败，请刷新页面重试。" : "Workflow status could not be refreshed. Reload to retry.")), [locale]);
+
+  const refreshDraft = useCallback((draftId: string) => refreshReads.request(draftId, async signal => {
+    const response = await fetch(`${apiBase}/api/authoring/workflows/${encodeURIComponent(draftId)}`, { signal });
+    if (!response.ok) throw new Error("workflow_refresh_failed");
+    const value = (await response.json()) as Draft;
+    if (signal.aborted) return;
+    applyDraft(value);
+    await Promise.all([refreshConversation(draftId, signal), refreshValidation(value, signal)]);
+    if (signal.aborted) return;
+    if (value.status !== "planning" && !["queued", "running", "preflight"].includes(String(value.validation?.phase ?? ""))
+        && value.validation?.live_status !== "running") { stopPolling(); stopValidationEvents(); }
+  }), [apiBase, applyDraft, refreshConversation, refreshReads, refreshValidation, stopPolling, stopValidationEvents]);
+
   const pollDraft = useCallback((draftId: string) => {
-    stopPolling();
-    pollTimer.current = window.setInterval(async () => {
-      const response = await fetch(`${apiBase}/api/authoring/workflows/${encodeURIComponent(draftId)}`);
-      if (!response.ok) return;
-      const value = (await response.json()) as Draft;
-      applyDraft(value);
-      await refreshConversation(draftId);
-      await refreshValidation(value);
-      if (
-        value.status !== "planning"
-        && !["queued", "running", "preflight"].includes(String(value.validation?.phase ?? ""))
-        && value.validation?.live_status !== "running"
-      ) stopPolling();
-    }, 1000);
-  }, [apiBase, applyDraft, refreshConversation, refreshValidation, stopPolling]);
+    stopValidationEvents(); stopPolling();
+    pollTimer.current = window.setInterval(() => { void refreshDraft(draftId); }, 1000);
+  }, [refreshDraft, stopPolling, stopValidationEvents]);
 
   const connectValidationEvents = useCallback((draftId: string, runId: string) => {
-    stopValidationEvents();
+    stopPolling(); stopValidationEvents();
     const events = new EventSource(`${apiBase}/api/runs/${encodeURIComponent(runId)}/events`);
     validationEvents.current = events;
-    const refresh = async () => {
-      const response = await fetch(`${apiBase}/api/authoring/workflows/${encodeURIComponent(draftId)}`);
-      if (!response.ok) return;
-      const value = (await response.json()) as Draft;
-      applyDraft(value);
-      await refreshConversation(draftId);
-      await refreshValidation(value);
-      if (String(value.validation?.phase ?? "") === "completed") stopValidationEvents();
-    };
-    for (const event of [
-      "progress_changed", "workflow_started", "node_started", "node_completed",
-      "node_inconclusive", "node_skipped_empty_input", "run_completed", "run_inconclusive",
-      "run_failed", "run_cancelled",
-    ]) events.addEventListener(event, () => { void refresh(); });
+    for (const event of ["progress_changed", "workflow_started", "node_started", "node_completed",
+      "node_inconclusive", "node_skipped_empty_input", "run_completed", "run_inconclusive", "run_failed", "run_cancelled"]) {
+      events.addEventListener(event, () => { void refreshDraft(draftId); });
+    }
     events.onerror = () => {
       events.close();
-      if (validationEvents.current === events) validationEvents.current = null;
-      pollDraft(draftId);
+      if (validationEvents.current !== events) return;
+      validationEvents.current = null; pollDraft(draftId);
     };
-  }, [apiBase, applyDraft, pollDraft, refreshConversation, refreshValidation, stopValidationEvents]);
+  }, [apiBase, pollDraft, refreshDraft, stopPolling, stopValidationEvents]);
 
   useEffect(() => {
+    const owner = new AbortController();
+    const signal = owner.signal;
+    // Capture navigation before any network wait; catalog latency must not hide a saved draft.
+    const query = new URLSearchParams(window.location.search);
+    const requested = query.get("draft"), requestedStep = query.get("step");
+    if (["compose", "review", "validate", "publish"].includes(String(requestedStep))) setActiveStep(requestedStep as WizardStep);
     void (async () => {
-      const response = await fetch(`${apiBase}/api/agents?executable=true`);
+      const response = await fetch(`${apiBase}/api/agents?executable=true`, { signal });
+      if (!response.ok) throw new Error("agent_catalog_unavailable");
       const all = (await response.json()) as AgentDefinition[];
-      setAgents(all.filter((agent) => Boolean(agent.execution?.outputSchema)));
-      const requested = new URLSearchParams(window.location.search).get("draft");
-      const requestedStep = new URLSearchParams(window.location.search).get("step");
-      if (["compose", "review", "validate", "publish"].includes(String(requestedStep))) {
-        setActiveStep(requestedStep as WizardStep);
-      }
-      if (requested) {
-        const existing = await fetch(`${apiBase}/api/authoring/workflows/${encodeURIComponent(requested)}`);
-        if (existing.ok) {
-          const value = (await existing.json()) as Draft;
-          applyDraft(value);
-          await refreshConversation(value.draft_id);
-          await refreshValidation(value);
-          if (value.status === "planning" || ["queued", "running"].includes(String(value.validation?.phase ?? ""))) pollDraft(value.draft_id);
-          if (value.validation_run_id && ["queued", "running"].includes(String(value.validation?.phase ?? ""))) {
-            connectValidationEvents(value.draft_id, value.validation_run_id);
-          }
-        }
-      }
-    })().catch((error) => setMessage(String(error)));
-    return () => { stopPolling(); stopValidationEvents(); };
-  }, [apiBase, applyDraft, connectValidationEvents, pollDraft, refreshConversation, refreshValidation, stopPolling, stopValidationEvents]);
+      if (!signal.aborted) setAgents(all.filter(agent => Boolean(agent.execution?.outputSchema)));
+    })().catch(() => { if (!signal.aborted) setMessage(locale === "zh"
+      ? "可用 Agent 目录暂不可用，已保存草稿仍可查看。" : "The executable Agent catalog is unavailable. Saved drafts remain viewable."); });
+    if (requested) {
+      setRestoringDraft(true); setRestoreFailed(false);
+      let restored = false;
+      void (async () => {
+        const existing = await fetch(`${apiBase}/api/authoring/workflows/${encodeURIComponent(requested)}`, { signal });
+        if (!existing.ok) throw new Error("saved_draft_unavailable");
+        const value = (await existing.json()) as Draft;
+        if (signal.aborted) return;
+        applyDraft(value); restored = true; setRestoringDraft(false);
+        await Promise.all([refreshConversation(value.draft_id, signal), refreshValidation(value, signal)]);
+        if (signal.aborted) return;
+        if (value.validation_run_id && ["queued", "running"].includes(String(value.validation?.phase ?? ""))) {
+          connectValidationEvents(value.draft_id, value.validation_run_id);
+        } else if (value.status === "planning" || ["queued", "running"].includes(String(value.validation?.phase ?? ""))) pollDraft(value.draft_id);
+      })().catch(() => { if (!signal.aborted) {
+        setRestoringDraft(false);
+        if (!restored) setRestoreFailed(true);
+        else setMessage(locale === "zh" ? "更新工作流状态失败，请刷新页面重试。" : "Workflow status could not be refreshed. Reload to retry.");
+      } });
+    }
+    return () => { owner.abort(); refreshReads.cancel(); stopPolling(); stopValidationEvents(); };
+  }, [apiBase, applyDraft, connectValidationEvents, locale, pollDraft, refreshConversation, refreshReads, refreshValidation, stopPolling, stopValidationEvents]);
 
   useEffect(() => {
     if (!draft || draft.status !== "needs_agents") return;
@@ -923,7 +934,7 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
       setAcknowledge(false);
       moveToStep("validate", payload.draft_id);
       if (payload.validation_run_id) connectValidationEvents(payload.draft_id, payload.validation_run_id);
-      pollDraft(payload.draft_id);
+      else pollDraft(payload.draft_id);
     } catch (error) {
       setValidationFeedback({ kind: "error", text: error instanceof Error ? error.message : String(error) });
     } finally { setBusy(false); setValidating(false); }
@@ -1060,6 +1071,13 @@ export default function WorkflowBuilder({ apiBase, locale, runPath, askPath, onP
       }
     });
   };
+
+  if (restoringDraft || restoreFailed) return <main className="workflow-builder-shell" aria-busy={restoringDraft}>
+    <p role={restoreFailed ? "alert" : "status"}>{restoreFailed
+      ? locale === "zh" ? "无法恢复已保存草稿，请刷新重试。" : "The saved draft could not be restored. Reload to retry."
+      : locale === "zh" ? "正在恢复已保存草稿…" : "Restoring the saved draft…"}</p>
+    {restoreFailed && <button onClick={() => window.location.reload()}>{locale === "zh" ? "重新加载" : "Reload"}</button>}
+  </main>;
 
   return (
     <main ref={annotationRoot} className="workflow-builder-shell">

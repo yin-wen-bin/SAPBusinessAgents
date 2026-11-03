@@ -6,9 +6,37 @@ optional form field must not become an unconditional execution dependency.
 from __future__ import annotations
 
 import re
+import copy
 from typing import Any
 
 _INPUT = re.compile(r"\{\{\s*input\.([A-Za-z0-9_]+)(\?)?\s*\}\}")
+
+
+def is_metadata_only_revision(package: dict[str, Any], original: dict[str, Any]) -> bool:
+    """Allow presentation edits while every executable/package input stays exact."""
+    def protected(value: dict[str, Any]) -> dict[str, Any]:
+        result = copy.deepcopy(value)
+        manifest = result.get("manifest")
+        if not isinstance(manifest, dict):
+            return result
+        for field in ("title", "summary", "owner", "sapModules"):
+            manifest.pop(field, None)
+        result.pop("readme", None)
+        files = result.get("files")
+        if isinstance(files, dict):
+            for name in ("content.zh.md", "content.en.md"):
+                files.pop(name, None)
+        return result
+    return protected(package) == protected(original)
+
+
+def revision_business_output_issues(package: dict[str, Any], original: dict[str, Any]) -> list[dict[str, str]]:
+    """Saving metadata does not resolve, hide or expand an existing business gap."""
+    issues = candidate_business_output_issues(package["manifest"])
+    if (issues and is_metadata_only_revision(package, original)
+            and issues == candidate_business_output_issues(original["manifest"])):
+        return []
+    return issues
 
 _TECHNICAL_OUTPUT_FIELDS = {
     "status",
@@ -93,6 +121,22 @@ def candidate_input_issues(manifest: dict[str, Any]) -> list[dict[str, str]]:
     return issues
 
 
+def business_output_coverage(manifest: dict[str, Any]) -> dict[str, bool] | None:
+    """The existing gate's obligations, not a substitute qualification result."""
+    execution = manifest.get("execution") or {}
+    steps = [item for item in execution.get("steps") or [] if isinstance(item, dict)]
+    if not any(str(item.get("executor") or "") in {"sap_read", "skill"} for item in steps):
+        return None
+    return {
+        "deterministic_rule": any(str(item.get("executor") or "") == "rule"
+            and str(item.get("operation") or "") not in {"", "evidence_summary"} for item in steps),
+        "business_output": any(str(name) not in _TECHNICAL_OUTPUT_FIELDS and isinstance(schema, dict)
+            and not (isinstance(schema.get("x-sapba-display"), dict)
+                     and schema["x-sapba-display"].get("visible") is False)
+            for name, schema in ((execution.get("outputSchema") or {}).get("properties") or {}).items()),
+    }
+
+
 def candidate_business_output_issues(manifest: dict[str, Any]) -> list[dict[str, str]]:
     """Require SAP-reading drafts to expose a deterministic business result.
 
@@ -102,28 +146,8 @@ def candidate_business_output_issues(manifest: dict[str, Any]) -> list[dict[str,
     a business user.
     """
 
-    execution = manifest.get("execution") or {}
-    steps = [item for item in execution.get("steps") or [] if isinstance(item, dict)]
-    if not any(str(item.get("executor") or "") in {"sap_read", "skill"} for item in steps):
-        return []
-    business_rules = [
-        item
-        for item in steps
-        if str(item.get("executor") or "") == "rule"
-        and str(item.get("operation") or "") not in {"", "evidence_summary"}
-    ]
-    properties = (execution.get("outputSchema") or {}).get("properties") or {}
-    business_fields = [
-        str(name)
-        for name, schema in properties.items()
-        if str(name) not in _TECHNICAL_OUTPUT_FIELDS
-        and isinstance(schema, dict)
-        and not (
-            isinstance(schema.get("x-sapba-display"), dict)
-            and schema["x-sapba-display"].get("visible") is False
-        )
-    ]
-    if business_rules and business_fields:
+    coverage = business_output_coverage(manifest)
+    if coverage is None or all(coverage.values()):
         return []
     return [
         {

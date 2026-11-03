@@ -7,6 +7,7 @@ import { resultPresentation } from "../lib/assistantPresentation";
 import { AnnotationButton, AnnotationPending, AssistantAnnotationOverlay, useAssistantAnnotations } from "./AssistantAnnotations";
 import { annotationFeedback, type AnnotationHost, type AnnotationItem, type WorkflowAnnotationReference } from "../lib/assistantAnnotations";
 import type { Locale } from "../lib/types";
+import { createWorkflowRefresh } from "../lib/workflowRefresh";
 
 type Round = { request_id: string; status: string; intent: "explain" | "revise"; message: string;
   answer?: string; presentation_version?: string; question?: string; clarification_id?: string; base_revision: number; result_revision?: number;
@@ -81,23 +82,31 @@ export default function WorkflowAssistant(props: Props) {
     let closed = false;
     let timer: number | undefined;
     let failures = 0;
+    let polling = false;
+    let latest: Snapshot | undefined;
+    const reads = createWorkflowRefresh(() => { failures += 1; });
     const base = `${props.apiBase}/api/authoring/workflows/${encodeURIComponent(props.draftId)}/assistant`;
     const load = async () => {
-      try {
-        const response = await fetch(base);
+      if (closed) return;
+      await reads.request(base, async signal => {
+        latest = undefined;
+        const response = await fetch(base, { signal });
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const value = await response.json() as Snapshot;
-        if (closed) return;
+        if (closed || signal.aborted) return;
+        latest = value;
         setSnapshot(value);
         cursor.current = value.events.at(-1)?.id ?? cursor.current;
         refreshRef.current();
         failures = 0;
-        return value;
-      } catch { failures += 1; }
+      });
+      return closed ? undefined : latest;
     };
     const events = new EventSource(`${base}/events?after=${cursor.current}`);
     events.addEventListener("workflow_assistant", () => { void load(); });
     events.onerror = () => {
+      if (closed || polling) return;
+      polling = true;
       events.close();
       const poll = async () => {
         const value = await load();
@@ -109,7 +118,7 @@ export default function WorkflowAssistant(props: Props) {
       void poll();
     };
     void load();
-    return () => { closed = true; events.close(); window.clearTimeout(timer); };
+    return () => { closed = true; reads.cancel(); events.close(); window.clearTimeout(timer); };
   }, [props.apiBase, props.draftId]);
 
   const send = async (intent: "explain" | "revise", annotationSend = false) => {
@@ -227,9 +236,12 @@ export default function WorkflowAssistant(props: Props) {
         disabled={props.dirty || sending || Boolean(pending.current)} onChange={e => setRestrictFields(e.target.checked)} />
         {zh ? "仅修改已选字段：" : "Modify only selected fields: "}{annotationItems.length ? annotationItems.map(item => item.label).join("、") : props.fieldLabel ?? props.fieldPath}
         <small>{props.dirty ? zh ? "请先保存，再重新确认范围。" : "Save first, then confirm the scope again."
-          : zh ? "仅约束修改候选的应用；解释仍只读，不限制 SDK 本地调查。" : "Restricts candidate application only. Explain remains read-only; local SDK investigation is unchanged."}</small></label>}
+          : zh ? "仅约束修改候选的应用；解释仍只读，执行模式决定 SDK 可使用的工具。" : "Restricts candidate application only. Explain remains read-only; the execution mode determines available SDK tools."}</small></label>}
       {Array.isArray(pending.current?.body.allowedChangePaths) && <p role="status">{zh ? "待重传请求保留原修改范围：" : "Pending retry retains its original scope: "}<code>{pending.current.body.allowedChangePaths.join(", ")}</code></p>}
-      <label>{zh ? "执行模式" : "Execution mode"}<select value={mode} disabled={Boolean(pending.current)} onChange={e => setMode(e.target.value as typeof mode)}><option value="restricted">{zh ? "受限工作区（默认）" : "Restricted workspace (default)"}</option><option value="full_access">{zh ? "可信本地 full_access" : "Trusted local full_access"}</option></select></label>
+      <label>{zh ? "执行模式" : "Execution mode"}<select value={mode} disabled={Boolean(pending.current)} onChange={e => setMode(e.target.value as typeof mode)}><option value="restricted">{zh ? "仅平台上下文（默认）" : "Provided context only (default)"}</option><option value="full_access">{zh ? "可信本地 full_access" : "Trusted local full_access"}</option></select></label>
+      <p>{mode === "restricted"
+        ? zh ? "仅使用平台提供的工作流上下文，不向模型开放本机文件或 Shell。" : "Uses platform-provided workflow context without local file or shell tools."
+        : zh ? "可信本地模式允许本机调查，需要明确确认。" : "Trusted local investigation requires explicit confirmation."}</p>
       {error && <p role="alert">{error}</p>}
       <div className="workflow-assistant-buttons">
         <button disabled={sending || props.busy || (!text.trim() && !annotationItems.length && !pending.current) || Boolean(pending.current && pending.current.body.intent !== "explain") || Boolean(reply && reply.intent !== "explain")} onClick={() => void send("explain")}>{zh ? "解释问题" : "Explain"}</button>

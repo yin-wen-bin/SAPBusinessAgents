@@ -477,6 +477,8 @@ class AgentAuthoringMixin:
         package = copy.deepcopy(package)
         manifest = package.get("manifest")
         identity_changed = self._prepare_identity_package(draft, package, kind=kind)
+        from .authoring_checks import is_metadata_only_revision
+        metadata_only = is_metadata_only_revision(package, previous)
         if not isinstance(manifest, dict) or str(manifest.get("slug") or "") != draft["agent_id"]:
             raise self._authoring_error("Agent ID cannot change inside a draft.", "agent_id_immutable")
         if manifest.get("module") != previous["manifest"].get("module") and not allow_catalog_module_change:
@@ -485,8 +487,9 @@ class AgentAuthoringMixin:
         manifest["version"] = draft.get("target_version") or manifest.get("version")
         # Any explicit edit adopts the current controlled relationship policy.
         # Existing persisted drafts are not rewritten until such a revision occurs.
-        apply_advisory_relationship_policy(manifest)
-        if not preserve_validation and self._risk_class(draft, package) != "metadata_only":
+        if not metadata_only:
+            apply_advisory_relationship_policy(manifest)
+        if not preserve_validation and not metadata_only and self._risk_class(draft, package) != "metadata_only":
             acceptance = manifest["execution"].setdefault("acceptance", {})
             acceptance["contractVersion"] = "1.0"
             acceptance.setdefault("requiredAssessments", [])
@@ -506,14 +509,14 @@ class AgentAuthoringMixin:
         if safe_runtime:
             validate_execution(manifest, f"agent-draft:{draft_id}")
             from .authoring_checks import (
-                candidate_business_output_issues,
+                revision_business_output_issues,
                 candidate_input_issues,
             )
             input_issues = candidate_input_issues(manifest)
             if input_issues:
                 raise ManifestError("Candidate input references require conditional execution.",
                                     issue_code=input_issues[0]["code"], path=input_issues[0]["path"])
-            business_output_issues = candidate_business_output_issues(manifest)
+            business_output_issues = revision_business_output_issues(package, previous)
             if business_output_issues:
                 raise ManifestError(
                     "A SAP-reading Agent must produce a deterministic business result.",
@@ -974,6 +977,12 @@ class AgentAuthoringMixin:
             private_files = set((draft.get("metadata") or {}).get("private_source_files") or [])
             runtime_package["files"] = {key: value for key, value in (runtime_package.get("files") or {}).items() if key not in private_files}
             runtime_package.pop("binary_files", None)
+            if turn["decision"].get("intent") != "explain":
+                from .authoring_harness import modification_preflight
+                preflight = modification_preflight(runtime_package)
+                turn["decision"]["authoring_preflight"] = preflight
+                self.store.save_agent_conversation_turn(turn)
+                self.store.append_agent_conversation_event(draft_id, "authoring_preflight", preflight, turn["turn"])
             snapshot = turn["decision"]["runtime_snapshot"]
             if turn["decision"].get("binding_error"):
                 raise self._authoring_error("The draft Runtime configuration needs attention.", turn["decision"]["binding_error"])
@@ -1088,6 +1097,22 @@ class AgentAuthoringMixin:
             turn.update(status="failed", decision={**turn["decision"], "error_code": code})
             if isinstance(exc, ManifestError):
                 turn["decision"]["validation_issues"] = [exc.public_issue()]
+            from .authoring_harness import AuthoringHarnessError, public_issues, public_checkpoints
+            if isinstance(exc, AuthoringHarnessError):
+                detail = exc.detail if isinstance(exc.detail, dict) else {}
+                turn["decision"]["validation_issues"] = public_issues(detail.get("validation_issues"))
+                convergence = detail.get("authoring_convergence")
+                convergence = convergence if isinstance(convergence, dict) else {}
+                if (isinstance(convergence.get("stop_reason"), str)
+                        and convergence["stop_reason"] in {"blocked", "preexisting_blocker_unchanged", "repeated_validation_failure", "round_limit"}
+                        and type(convergence.get("attempts")) is int and 1 <= convergence["attempts"] <= 5):
+                    turn["decision"]["authoring_convergence"] = {
+                        "stop_reason": convergence["stop_reason"], "attempts": convergence["attempts"]}
+                if isinstance(detail.get("harness"), dict):
+                    turn["decision"]["harness"] = {"checks": public_checkpoints(detail["harness"].get("checks")),
+                        "platform_apply": "not_performed", "live_testing": "not_performed"}
+                if detail.get("cleanup_failure_code") == "runtime_cleanup_incomplete":
+                    turn["decision"]["error_code"] = "runtime_cleanup_incomplete"
         finally:
             if tool_session is not None:
                 tool_broker.close_authoring_session(operation_id)

@@ -134,7 +134,7 @@ async def _authoring_preflight_command(codex: Any, workspace: Any, command: list
     try:
         response = await asyncio.wait_for(codex._client.request("command/exec", {
             "command": command, "cwd": str(workspace.source),
-            "permissionProfile": "sapba-authoring", "timeoutMs": int(timeout * 1000),
+            "permissions": "sapba-authoring", "timeoutMs": int(timeout * 1000),
         }, response_model=CommandExecResponse), timeout=timeout + 30)
     except TimeoutError:
         # The caller's finally owns and terminates the entire client/process tree.

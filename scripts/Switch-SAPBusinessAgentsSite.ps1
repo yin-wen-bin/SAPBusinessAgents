@@ -7,6 +7,7 @@ param(
     [Parameter(Mandatory = $true)] [string]$ExpectedModule,
     [Parameter(Mandatory = $true)] [string]$ResultPath,
     [string]$ApiUrl = "",
+    [ValidateSet("active", "inactive")] [string]$ExpectedLifecycleState = "active",
     [ValidateRange(1, 65535)] [int]$SitePort = 4321
 )
 
@@ -42,7 +43,7 @@ function Get-ListenerProcessId {
             $listenerPid = [int]$Matches.pid
             $localEndpoint = [string]$Matches.local
             if ($localEndpoint -match ':(?<port>\d+)$' -and [int]$Matches.port -eq $Port) {
-                return $listenerPid
+                if ($listenerPid -gt 0) { return $listenerPid }
             }
         }
     }
@@ -54,6 +55,32 @@ function Get-ProcessCommandLine {
     $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId"
     if ($null -eq $process) { return "" }
     return [string]$process.CommandLine
+}
+
+function Stop-ManagedPreview {
+    # Astro 7 may detach its preview launcher. Its own project-scoped CLI
+    # verifies the live lock before stopping that project's recorded server.
+    $previewLock = Join-Path $SiteRoot ".astro\preview.json"
+    if (-not (Test-Path -LiteralPath $previewLock -PathType Leaf)) { return $false }
+    $preview = Get-Content -LiteralPath $previewLock -Raw | ConvertFrom-Json
+    if ([int]$preview.port -ne $SitePort -or [int]$preview.pid -le 0) { return $false }
+    $previewUri = [uri][string]$preview.url
+    if ($previewUri.Scheme -ne "http" -or $previewUri.Host -notin @("127.0.0.1", "localhost") -or $previewUri.Port -ne $SitePort) {
+        throw "The project preview lock does not identify the requested local server."
+    }
+    Push-Location -LiteralPath $SiteRoot
+    try {
+        $previewStatus = (& $NodePath $AstroPath preview status 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0 -or $previewStatus -notmatch ("pid " + [regex]::Escape([string]$preview.pid) + "[,)]")) {
+            throw "The project preview process could not be confirmed."
+        }
+        $previewStop = (& $NodePath $AstroPath preview stop 2>&1 | Out-String)
+        if ($LASTEXITCODE -ne 0 -or $previewStop -notmatch ("Stopped preview server \(pid " + [regex]::Escape([string]$preview.pid) + "\)")) {
+            throw "The project preview process did not confirm shutdown."
+        }
+    }
+    finally { Pop-Location }
+    return $true
 }
 
 function Get-OutDirFromCommandLine {
@@ -88,24 +115,57 @@ function Start-Site {
 }
 
 function Wait-Site {
-    param([object]$Process, [string]$ExpectedFingerprint, [string]$AgentId, [string]$Version, [string]$Module, [int]$Seconds)
+    param([object]$Process, [string]$ExpectedFingerprint, [string]$AgentId, [string]$Version, [string]$Module, [int]$Seconds, [string]$LifecycleState = "active")
+    $script:LastHealthFailure = ""
     $deadline = (Get-Date).AddSeconds($Seconds)
     do {
         $Process.Refresh()
         if ($Process.HasExited) { return $false }
         try {
             if ([string]::IsNullOrWhiteSpace($ExpectedFingerprint)) {
-                $home = Invoke-WebRequest -Uri "http://127.0.0.1:$SitePort/zh/" -UseBasicParsing -TimeoutSec 1
-                if ($home.StatusCode -eq 200 -and $home.Content.Contains("SAP Business Agents")) { return $true }
+                $siteResponse = Invoke-WebRequest -Uri "http://127.0.0.1:$SitePort/zh/" -UseBasicParsing -TimeoutSec 1
+                if ($siteResponse.StatusCode -eq 200 -and $siteResponse.Content.Contains("SAP Business Agents")) { return $true }
             }
             else {
                 $marker = Invoke-RestMethod -Uri "http://127.0.0.1:$SitePort/sapba-build.json" -TimeoutSec 1
                 if ($marker.fingerprint -eq $ExpectedFingerprint) {
+                    $markerState = "active"
+                    if ($marker.PSObject.Properties.Name -contains "lifecycle_state") { $markerState = [string]$marker.lifecycle_state }
+                    if ($markerState -ne $LifecycleState) { throw "The build lifecycle state does not match." }
+                    if ($LifecycleState -eq "inactive") {
+                        if ([string]::IsNullOrWhiteSpace($AgentId) -or [string]::IsNullOrWhiteSpace($Module)) {
+                            throw "Inactive health checks require the exact Agent identity."
+                        }
+                        foreach ($language in @("zh", "en")) {
+                            # Read only the status headers. In particular,
+                            # do not throw for or drain a 404 error body.
+                            Add-Type -AssemblyName System.Net.Http
+                            $detailHandler = [System.Net.Http.HttpClientHandler]::new()
+                            $detailHandler.UseProxy = $false
+                            $detailClient = [System.Net.Http.HttpClient]::new($detailHandler)
+                            $detailClient.Timeout = [TimeSpan]::FromSeconds(1)
+                            $detailMessage = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Head, "http://127.0.0.1:$SitePort/$language/agents/$Module/$AgentId/")
+                            $detailResponse = $null
+                            try {
+                                $detailResponse = $detailClient.SendAsync($detailMessage, [System.Net.Http.HttpCompletionOption]::ResponseHeadersRead).GetAwaiter().GetResult()
+                                $detailStatus = [int]$detailResponse.StatusCode
+                            }
+                            finally {
+                                if ($null -ne $detailResponse) { $detailResponse.Dispose() }
+                                $detailMessage.Dispose()
+                                $detailClient.Dispose()
+                            }
+                            if ($detailStatus -ne 404) { throw "The inactive Agent is still publicly available." }
+                        }
+                        $siteResponse = Invoke-WebRequest -Uri "http://127.0.0.1:$SitePort/zh/" -UseBasicParsing -TimeoutSec 1
+                        if ($siteResponse.StatusCode -eq 200 -and $siteResponse.Content.Contains("SAP Business Agents")) { return $true }
+                        throw "The inactive build home page is unavailable."
+                    }
                     if ([string]::IsNullOrWhiteSpace($AgentId) -or
                         [string]::IsNullOrWhiteSpace($Version) -or
                         [string]::IsNullOrWhiteSpace($Module)) {
-                        $home = Invoke-WebRequest -Uri "http://127.0.0.1:$SitePort/zh/" -UseBasicParsing -TimeoutSec 1
-                        if ($home.StatusCode -eq 200 -and $home.Content.Contains("SAP Business Agents")) { return $true }
+                        $siteResponse = Invoke-WebRequest -Uri "http://127.0.0.1:$SitePort/zh/" -UseBasicParsing -TimeoutSec 1
+                        if ($siteResponse.StatusCode -eq 200 -and $siteResponse.Content.Contains("SAP Business Agents")) { return $true }
                     }
                     else {
                         $detail = Invoke-WebRequest -Uri "http://127.0.0.1:$SitePort/zh/agents/$Module/$AgentId/" -UseBasicParsing -TimeoutSec 1
@@ -115,7 +175,7 @@ function Wait-Site {
                 }
             }
         }
-        catch { }
+        catch { $script:LastHealthFailure = [string]$_.Exception.Message }
         Start-Sleep -Milliseconds 250
     } while ((Get-Date) -lt $deadline)
     return $false
@@ -183,6 +243,22 @@ try {
             $oldPointerPid = [int]$current.pid
         }
     }
+    if (Stop-ManagedPreview) {
+        $oldPid = $null
+        if ([string]::IsNullOrWhiteSpace($oldDist)) { $oldDist = Join-Path $SiteRoot "dist" }
+    }
+    elseif ($null -eq $oldPid -and $null -ne $oldPointerPid -and -not [string]::IsNullOrWhiteSpace($oldDist)) {
+        # Some Windows sessions redact socket-owner PIDs. A current pointer
+        # needs both its exact process arguments and its served fingerprint.
+        $pointerCommand = Get-ProcessCommandLine -ProcessId $oldPointerPid
+        $pointerDist = [System.IO.Path]::GetFullPath($oldDist)
+        if ($pointerDist.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) -and
+            $pointerCommand.IndexOf($pointerDist, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -and
+            $pointerCommand -match ("--port\s+" + $SitePort + "(\s|$)")) {
+            $servedPointer = Invoke-RestMethod -Uri "http://127.0.0.1:$SitePort/sapba-build.json" -TimeoutSec 2
+            if ($servedPointer.fingerprint -eq $oldFingerprint) { $oldPid = $oldPointerPid }
+        }
+    }
     if ($null -ne $oldPid) {
         $managedByCurrentPointer = $false
         if ($null -ne $oldPointerPid -and $oldPointerPid -eq $oldPid -and
@@ -207,7 +283,7 @@ try {
     }
 
     $newProcess = Start-Site -BuildDist $ResolvedDist -Label "candidate"
-    if (-not (Wait-Site -Process $newProcess -ExpectedFingerprint $Fingerprint -AgentId $ExpectedAgentId -Version $ExpectedVersion -Module $ExpectedModule -Seconds 15)) {
+    if (-not (Wait-Site -Process $newProcess -ExpectedFingerprint $Fingerprint -AgentId $ExpectedAgentId -Version $ExpectedVersion -Module $ExpectedModule -Seconds 15 -LifecycleState $ExpectedLifecycleState)) {
         if (-not $newProcess.HasExited) { Stop-Process -Id $newProcess.Id -ErrorAction SilentlyContinue }
         if (-not [string]::IsNullOrWhiteSpace($oldDist) -and (Test-Path -LiteralPath $oldDist -PathType Container)) {
             $oldMarkerPath = Join-Path $oldDist "sapba-build.json"
@@ -215,20 +291,27 @@ try {
             $rollbackAgent = ""
             $rollbackVersion = ""
             $rollbackModule = ""
+            $rollbackState = "active"
             if (Test-Path -LiteralPath $oldMarkerPath -PathType Leaf) {
                 $oldMarker = Get-Content -LiteralPath $oldMarkerPath -Raw | ConvertFrom-Json
                 $rollbackFingerprint = [string]$oldMarker.fingerprint
                 $rollbackAgent = [string]$oldMarker.agent_id
                 $rollbackVersion = [string]$oldMarker.version
                 $rollbackModule = [string]$oldMarker.catalog_module
+                if ($oldMarker.PSObject.Properties.Name -contains "lifecycle_state") { $rollbackState = [string]$oldMarker.lifecycle_state }
             }
             $rollback = Start-Site -BuildDist $oldDist -Label "rollback"
-            if (Wait-Site -Process $rollback -ExpectedFingerprint $rollbackFingerprint -AgentId $rollbackAgent -Version $rollbackVersion -Module $rollbackModule -Seconds 15) {
+            if (Wait-Site -Process $rollback -ExpectedFingerprint $rollbackFingerprint -AgentId $rollbackAgent -Version $rollbackVersion -Module $rollbackModule -Seconds 15 -LifecycleState $rollbackState) {
                 $result.rolled_back = $true
+                Write-JsonAtomic -Path $CurrentPath -Value ([ordered]@{
+                    fingerprint = $rollbackFingerprint; dist_path = $oldDist; pid = $rollback.Id;
+                    agent_id = $rollbackAgent; version = $rollbackVersion; lifecycle_state = $rollbackState;
+                    recorded_at = (Get-Date).ToString("o")
+                })
             }
         }
         $result.failure_code = "site_refresh_health_failed"
-        throw "The candidate Web UI failed health checks."
+        throw ("The candidate Web UI failed health checks. " + $script:LastHealthFailure)
     }
 
     if (-not [string]::IsNullOrWhiteSpace($oldDist)) {

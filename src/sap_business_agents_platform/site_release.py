@@ -29,7 +29,9 @@ class SiteReleaseManager:
     failure cannot stop the currently healthy API or Web UI.
     """
 
-    def __init__(self, repository_root: Path, data_root: Path) -> None:
+    def __init__(self, repository_root: Path, data_root: Path, *,
+                 site_origins: tuple[str, ...] | None = None) -> None:
+        self.site_origins = site_origins if site_origins is not None else ("http://127.0.0.1:4321",)
         self.repository_root = repository_root.resolve()
         self.data_root = data_root.resolve()
         self.build_root = (self.data_root / "site-builds").resolve()
@@ -56,7 +58,10 @@ class SiteReleaseManager:
         agent_id: str,
         version: str,
         catalog_module: str,
+        expected_state: str = "active",
     ) -> dict[str, Any]:
+        if expected_state not in {"active", "inactive"}:
+            raise SiteReleaseError("Unknown expected lifecycle state.", code="site_lifecycle_state_invalid", phase="checking_site")
         source_root = source_root.resolve()
         site_root = source_root / "site"
         if not self.available(source_root):
@@ -81,7 +86,7 @@ class SiteReleaseManager:
         marker = final_dist / "sapba-build.json"
         if self._valid_dist(final_dist) and marker.is_file():
             cached = self._read_json(marker)
-            if cached.get("fingerprint") == fingerprint:
+            if cached.get("fingerprint") == fingerprint and cached.get("lifecycle_state", "active") == expected_state:
                 operation_logs = self.log_root / operation_id
                 operation_logs.mkdir(parents=True, exist_ok=True)
                 astro = self.repository_root / "site" / "node_modules" / "astro" / "bin" / "astro.mjs"
@@ -95,6 +100,7 @@ class SiteReleaseManager:
                     agent_id=agent_id,
                     version=version,
                     catalog_module=catalog_module,
+                    expected_state=expected_state,
                 )
                 return {
                     "fingerprint": fingerprint,
@@ -165,6 +171,7 @@ class SiteReleaseManager:
                         "agent_id": agent_id,
                         "version": version,
                         "catalog_module": catalog_module,
+                        "lifecycle_state": expected_state,
                     },
                     ensure_ascii=False,
                     sort_keys=True,
@@ -181,6 +188,7 @@ class SiteReleaseManager:
                 agent_id=agent_id,
                 version=version,
                 catalog_module=catalog_module,
+                expected_state=expected_state,
             )
             if final_root.exists():
                 # Immutable caches are never overwritten. A conflicting cache
@@ -210,7 +218,10 @@ class SiteReleaseManager:
         agent_id: str,
         version: str,
         catalog_module: str,
+        expected_state: str = "active",
     ) -> dict[str, Any]:
+        if expected_state not in {"active", "inactive"}:
+            raise SiteReleaseError("Unknown expected lifecycle state.", code="site_lifecycle_state_invalid", phase="checking_site")
         script = self.repository_root / "scripts" / "Switch-SAPBusinessAgentsSite.ps1"
         if not script.is_file():
             return {
@@ -230,17 +241,23 @@ class SiteReleaseManager:
             "-ExpectedModule", catalog_module,
             "-ResultPath", str(result_path),
             "-ApiUrl", self._api_url(),
+            "-SitePort", str(self._site_port()),
+            "-ExpectedLifecycleState", expected_state,
         ]
         try:
-            subprocess.run(
-                command,
-                cwd=self.repository_root,
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=60,
-                creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
-            )
+            # A long-lived Windows preview can inherit pipe handles even
+            # after PowerShell exits. A real log file keeps timeout/reaping
+            # bounded without waiting for the Web UI process to close a pipe.
+            with (result_path.parent / "site-switch.log").open("ab") as switch_log:
+                subprocess.run(
+                    command,
+                    cwd=self.repository_root,
+                    check=False,
+                    stdout=switch_log,
+                    stderr=subprocess.STDOUT,
+                    timeout=60,
+                    creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
+                )
         except (OSError, subprocess.TimeoutExpired):
             return {
                 "status": "failed",
@@ -340,6 +357,7 @@ class SiteReleaseManager:
         agent_id: str,
         version: str,
         catalog_module: str,
+        expected_state: str = "active",
     ) -> None:
         port = self._free_port()
         stdout = (log_root / "candidate.stdout.log").open("w", encoding="utf-8")
@@ -369,7 +387,7 @@ class SiteReleaseManager:
                 item.parent.parent.name
                 for item in (site_root.parent / "agents").glob(f"*/{agent_id}/agent.json")
             ]
-            if repository_modules and repository_modules[0] != catalog_module:
+            if expected_state == "active" and repository_modules and repository_modules[0] != catalog_module:
                 redirect_paths.extend(
                     [
                         (
@@ -390,10 +408,22 @@ class SiteReleaseManager:
                     marker = json.loads(bodies["/sapba-build.json"])
                     if marker.get("fingerprint") != fingerprint:
                         raise ValueError("fingerprint")
+                    if marker.get("lifecycle_state", "active") != expected_state:
+                        raise ValueError("lifecycle-state")
                     for path in detail_paths:
-                        body = self._fetch(f"http://127.0.0.1:{port}{path}")
-                        if agent_id not in body or version not in body:
-                            raise ValueError("agent-version")
+                        url = f"http://127.0.0.1:{port}{path}"
+                        if expected_state == "inactive":
+                            try:
+                                self._fetch(url)
+                            except urllib.error.HTTPError as exc:
+                                if exc.code != 404:
+                                    raise
+                            else:
+                                raise ValueError("inactive-agent-still-public")
+                        else:
+                            body = self._fetch(url)
+                            if agent_id not in body or version not in body:
+                                raise ValueError("agent-version")
                     for path, destination in redirect_paths:
                         body = self._fetch(f"http://127.0.0.1:{port}{path}")
                         if agent_id not in body or destination not in body:
@@ -439,6 +469,25 @@ class SiteReleaseManager:
                 continue
             if item.name not in keep:
                 shutil.rmtree(self._within_build_root(item), ignore_errors=True)
+
+    def _site_port(self) -> int:
+        from urllib.parse import urlsplit
+        ports: set[int] = set()
+        for origin in self.site_origins:
+            try:
+                parsed = urlsplit(origin)
+                if (parsed.scheme != "http" or parsed.hostname not in {"127.0.0.1", "localhost"}
+                        or parsed.username is not None or parsed.password is not None
+                        or parsed.path not in {"", "/"} or parsed.query or parsed.fragment):
+                    raise ValueError("Not a local Web UI origin")
+                ports.add(parsed.port or 80)
+            except ValueError:
+                raise SiteReleaseError("The Web UI origin must identify a local HTTP server.",
+                                       code="site_origin_invalid", phase="refreshing_site") from None
+        if len(ports) != 1:
+            raise SiteReleaseError("The Web UI origins do not identify one server port.",
+                                   code="site_origin_ambiguous", phase="refreshing_site")
+        return ports.pop()
 
     def _api_url(self) -> str:
         return os.getenv("SAPBA_INTERNAL_API_URL", "http://127.0.0.1:8765").rstrip("/")

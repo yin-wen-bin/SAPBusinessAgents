@@ -18,6 +18,13 @@ from .runtime_workflow_authoring import OUTPUT_SCHEMA, instructions as authoring
 
 
 def capabilities(mode: str, preflight: dict | None = None) -> dict[str, Any]:
+    if preflight and preflight.get("boundary") == "provided_workflow_context_only":
+        return {"contract": "workflow_authoring.v2", "mode": mode,
+            "execution_boundary": "provided_workflow_context_only", "os_isolation": False,
+            "file_edit": "not_exposed", "shell_tests": "not_exposed", "web": "not_exposed",
+            "mcp": "not_connected", "subagents": "not_exposed", "image_input": "not_verified",
+            "candidate_edit": "platform_validated_workflow_json", "resume": "platform_history",
+            "steer": "queue_only", "stream_events": "sdk_events"}
     verified = bool(preflight and preflight.get("status") == "passed")
     return {
         "contract": "workflow_authoring.v2", "mode": mode,

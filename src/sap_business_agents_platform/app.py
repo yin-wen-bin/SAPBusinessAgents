@@ -472,6 +472,7 @@ def create_app(
                 logging.getLogger(__name__).warning("WorkBuddy cleanup requires an explicit recheck.")
         with startup_phase("operation_recovery"):
             store.recover_agent_operations()
+            store.recover_draft_creations()
         with startup_phase("publication_reconciliation"):
             agent_lifecycle.reconcile_publications()
         with startup_phase("plugin_start"):

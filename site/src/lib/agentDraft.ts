@@ -96,6 +96,9 @@ export function feedbackFailureText(code: unknown, locale: Locale): string {
     agent_feedback_annotation_invalid: ["标注目标已变化或不属于当前修订，请重新定位并标注。", "The annotation target changed or does not belong to the current revision. Locate and annotate it again."],
     agent_feedback_selection_invalid: ["选中文字与保存的对象不一致，请保存并重新选择。", "The selected text does not match the saved object. Save and select again."],
     agent_harness_platform_approval_required: ["草稿助手尝试修改平台源码，控制器已拒绝；本轮未应用修改。", "The draft assistant attempted a platform source edit. The controller rejected it; no changes were applied."],
+    agent_business_output_contract_missing: ["草稿缺少完整业务规则或实际业务输出，本轮修改未保存。请先核对下方缺口及修改范围，不要直接重复提交相同意见。", "The draft lacks a complete business rule or business output. No revision was saved. Review the blockers and requested scope before sending the same request again."],
+    agent_harness_no_progress: ["连续纠错未解决相同校验问题，已停止本轮且未保存。请核对下方真实原因，不要直接重复相同修改。", "Repeated corrections did not resolve the same validation issues. The turn stopped without saving. Review the causes below before repeating the change."],
+    agent_harness_round_limit: ["本轮已达到候选纠错上限，未保存修改。请核对下方仍未解决的问题。", "The candidate correction limit was reached without saving. Review the unresolved issues below."],
     runtime_not_selectable: ["本轮使用的 Runtime 暂不可用，请检查系统配置后重试。", "The Runtime for this turn is unavailable. Check system settings before retrying."],
     runtime_model_check_required: ["草稿绑定模型缺少当前适用的兼容检查或安全承接依据；不会自动切换模型。请到系统配置核对。", "The draft model lacks an applicable compatibility check or verified recovery evidence. Check system settings; the model is not switched automatically."],
     runtime_reasoning_effort_unsupported: ["本轮推理强度不受支持，请检查该模型的配置。", "The reasoning effort for this turn is unsupported. Check this model's settings."],
@@ -124,6 +127,9 @@ export function feedbackEffort(value: unknown, locale: Locale): string {
 }
 
 export function canRetryFeedback(turn: any): boolean {
+  // A new request can address the blocker; a generic replay of this unchanged
+  // scope cannot. Legacy failures without this controller fact stay compatible.
+  if (turn?.decision?.authoring_convergence?.stop_reason === "preexisting_blocker_unchanged") return false;
   return turn?.kind === "feedback" && ["failed", "cancelled", "interrupted", "timed_out", "expired"].includes(turn.status) && Number.isInteger(turn.turn ?? turn.turn_number) && (turn.turn ?? turn.turn_number) > 0 && typeof (turn.user_message ?? turn.feedback) === "string" && Boolean((turn.user_message ?? turn.feedback).trim());
 }
 
