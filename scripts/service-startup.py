@@ -288,7 +288,7 @@ def recover_bytecode(args):
     data=settings_for(root).data_root;marker=data/'startup-maintenance.json'
     log=root/'.local-data/startup'/('bytecode-recovery-'+uuid.uuid4().hex)
     log.mkdir(parents=True)
-    with control.file_lock(data/'deployment.lock',wait=60),control.file_lock(data/'startup-admission.lock'):
+    with control.mcp_maintenance(root, activity_root=data, timeout=args.timeout), control.file_lock(data/'deployment.lock',wait=60),control.file_lock(data/'startup-admission.lock'):
         if marker.exists() or (root/'.local-data/startup/pending-switch.json').exists():
             raise control.StartupBlocked('startup_switch_recovery_required')
         if control.activity(data) or jobs_pending(root):raise control.StartupBlocked('startup_recovery_busy')
@@ -432,7 +432,9 @@ def assert_writers(root, server_pids):
     command = "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,CreationDate,Name,CommandLine | ConvertTo-Json -Compress"
     rows = json.loads(subprocess.check_output(["powershell.exe", "-NoProfile", "-Command", command], text=True))
     by_id = {row['ProcessId']: row for row in rows}
-    allowed = {os.getpid(), *server_pids}
+    # A module name alone is never an exemption: the maintenance scope owns the
+    # exclusive operation lock and requires a live, source-bound acknowledgement.
+    allowed = {os.getpid(), *server_pids, *control.mcp_quiescent_pids(root, rows, ROOT)}
     for pid in list(allowed):
         visited = set()
         while pid in by_id and by_id[pid].get('ParentProcessId') and pid not in {0,4}:
@@ -720,7 +722,7 @@ def _ensure_core(args):
                 print("[SAPBusinessAgents] Update pending: waiting for active tasks/cleanup; Ctrl+C leaves tasks running.", flush=True)
                 time.sleep(5); continue
             try:
-                with control.file_lock(activity_root / "deployment.lock", wait=60), control.file_lock(activity_root / "startup-admission.lock"):
+                with control.mcp_maintenance(root, activity_root=activity_root, timeout=args.timeout), control.file_lock(activity_root / "deployment.lock", wait=60), control.file_lock(activity_root / "startup-admission.lock"):
                     _verification.set({})  # A new lock boundary must reread actual bytes.
                     if control.activity(activity_root) or pending_jobs(): continue
                     current_manifest = phase('source_consistency', target_manifest)
@@ -887,7 +889,7 @@ def _ensure_core(args):
                 break
             except control.StartupBlocked as exc:
                 if str(exc).startswith('startup_other_writers_active:'):
-                    print('[SAPBusinessAgents] Waiting for other project processes to exit; no process was stopped. Ctrl+C cancels only this launch.', flush=True)
+                    print('[SAPBusinessAgents] Waiting for uncoordinated project processes (' + str(exc).split(':',1)[1] + '); no process was stopped. Legacy MCP needs one reload to install maintenance support. Ctrl+C cancels only this launch.', flush=True)
                 elif str(exc) not in {"startup_coordination_busy", 'startup_became_busy_retry'}: raise
                 time.sleep(5)
     # The warm path already verified health/build bindings and enumerated the
@@ -1385,7 +1387,7 @@ def recover_switch(args):
     """Explicit recovery of the original transaction; never reinstall/requery."""
     root=args.root.resolve();data=root/'.local-data';activity_root=settings_for(root).data_root
     path=data/'startup/pending-switch.json'
-    with control.file_lock(activity_root/'deployment.lock'), control.file_lock(activity_root/'startup-admission.lock'):
+    with control.mcp_maintenance(root, activity_root=activity_root, timeout=args.timeout, recovery=True), control.file_lock(activity_root/'deployment.lock'), control.file_lock(activity_root/'startup-admission.lock'):
         if not path.exists():return {'status':'nothing_pending'}
         saved=json.loads(path.read_bytes())
         if saved.get('initialization'):

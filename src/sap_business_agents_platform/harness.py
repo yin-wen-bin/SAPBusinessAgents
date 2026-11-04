@@ -2510,6 +2510,7 @@ def _mcp_overrides(
         except (OSError, tomllib.TOMLDecodeError):
             raise RuntimeError("capability_isolation_failed:codex_config_unreadable")
     common_env = {
+        "SAPBA_STARTUP_REPOSITORY": str(settings.repository_root),
         "SAPBA_INTERNAL_API_URL": settings.internal_api_url,
         "SAPBA_HARNESS_RUN_ID": run_id,
         "SAPBA_HARNESS_CAPABILITY": capability,

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
 import json
 import sys
 import threading
@@ -89,25 +90,56 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--repository", required=True, type=Path)
     args = parser.parse_args()
-    store = Store(args.repository)
+    # Avoid the platform package's eager FastAPI import. This pure coordination
+    # module has the same source/lock contract as the verified launcher.
+    source = Path(__file__).resolve().parents[1] / 'sap_business_agents_platform/startup_control.py'
+    spec = importlib.util.spec_from_file_location('sapba_mcp_coordination', source)
+    coordination = importlib.util.module_from_spec(spec)
+    exec(compile(source.read_bytes(), str(source), 'exec'), coordination.__dict__)
     output_lock = threading.Lock()
     def send(value):
         if value is not None:
             with output_lock:
                 print(json.dumps(value, ensure_ascii=False), flush=True)
-    def dispatch(request):
-        send(response(store, request))
+    def blocked(request, error):
+        value = {'code': str(error), 'accepted': False, 'retryable': True}
+        send({'jsonrpc': '2.0', 'id': request['id'], 'result': {
+            'content': [{'type': 'text', 'text': json.dumps(value)}],
+            'isError': True, 'structuredContent': value}})
+    def dispatch(request, operation):
+        try:
+            # Store initialization also writes. Do it only after admission.
+            send(response(Store(args.repository), request))
+        except Exception:
+            send({'jsonrpc': '2.0', 'id': request['id'], 'error': {
+                'code': -32603, 'message': 'test_tool_failed'}})
+        finally:
+            operation.__exit__(None, None, None)
     # A long SAP read must not block status or the explicit cancellation tool.
-    with ThreadPoolExecutor(max_workers=4, thread_name_prefix="sapba-test-tool") as workers:
+    with coordination.MCPParticipant(args.repository, 'sap_business_agents_test_agent.mcp', __file__) as participant, ThreadPoolExecutor(max_workers=4, thread_name_prefix="sapba-test-tool") as workers, ThreadPoolExecutor(max_workers=1, thread_name_prefix='sapba-test-cancel') as cancellations:
         for line in sys.stdin:
             try:
                 request = json.loads(line)
                 if not isinstance(request, dict):
                     raise ValueError()
                 if request.get("method") == "tools/call":
-                    workers.submit(dispatch, request)
+                    if request.get('id') is None: continue
+                    cancel = (request.get('params') or {}).get('name') == 'test_cancel'
+                    operation = participant.operation(cancel=cancel)
+                    try:
+                        # Admission precedes the worker queue. Queued calls are
+                        # already accepted and must drain before any switch.
+                        operation.__enter__()
+                    except coordination.StartupBlocked as error:
+                        blocked(request, error)
+                        continue
+                    try:
+                        (cancellations if cancel else workers).submit(dispatch, request, operation)
+                    except BaseException:
+                        operation.__exit__(None, None, None)
+                        raise
                 else:
-                    dispatch(request)
+                    send(response(None, request))
             except (ValueError, TypeError):
                 send({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}})
 

@@ -1013,7 +1013,8 @@ class AgentAuthoringMixin:
                         started_at + timedelta(seconds=budget), ddic_fields,
                     )
                     tool_session = {"operation_id": operation_id, "capability": capability,
-                                    "internal_api_url": tool_broker.settings.internal_api_url}
+                                    "internal_api_url": tool_broker.settings.internal_api_url,
+                                    "repository_root": str(tool_broker.settings.repository_root)}
                     tool_options["tool_session"] = tool_session
                 progress("generating_revision", 1)
                 images = [self._feedback_image_data(draft_id, image_id)

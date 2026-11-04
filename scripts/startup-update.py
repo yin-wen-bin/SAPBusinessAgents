@@ -27,6 +27,7 @@ DEFAULT_TESTS = (
     'tests/test_startup_approved_dependencies.py',
     'tests/test_startup_launcher.py', 'tests/test_native_auto_test_startup_update.py',
     'tests/test_native_auto_test_mcp_stream.py',
+    'tests/test_startup_mcp.py',
 )
 EXCLUDED = {'__pycache__', '.pytest_cache', 'node_modules', 'dist', '.astro', 'generated', '.git'}
 

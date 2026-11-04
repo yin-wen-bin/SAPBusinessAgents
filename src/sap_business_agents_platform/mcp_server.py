@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import os
 import sys
@@ -380,7 +381,7 @@ def _call_platform(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     return payload if isinstance(payload, dict) else {"ok": False, "code": "invalid_broker_output"}
 
 
-def serve(mode: str) -> None:
+def serve(mode: str, participant=None) -> None:
     tools = {"sap": _SAP_TOOLS, "tools": _TOOL_TOOLS, "authoring": _AUTHORING_TOOLS}[mode]
     def current_tools():
         if mode != "sap":
@@ -430,8 +431,13 @@ def serve(mode: str) -> None:
                 if name not in allowed or not isinstance(arguments, dict):
                     result = _result({"ok": False, "code": "unregistered_tool_rejected"})
                 else:
-                    current_tools()  # No execution after a missing/stale/tampered contract.
-                    result = _result(_call_platform(name, arguments))
+                    from .startup_control import StartupBlocked
+                    try:
+                        with participant.operation() if participant else nullcontext():
+                            current_tools()  # No execution after a missing/stale/tampered contract.
+                            result = _result(_call_platform(name, arguments))
+                    except StartupBlocked as error:
+                        result = _result({'ok': False, 'code': str(error), 'accepted': False, 'retryable': True})
             elif method and str(method).startswith("notifications/"):
                 continue
             else:
@@ -460,7 +466,15 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--mode", choices=["sap", "tools", "authoring"], required=True)
     args = parser.parse_args()
-    serve(args.mode)
+    root = os.environ.get('SAPBA_STARTUP_REPOSITORY')
+    if root:
+        from .startup_control import MCPParticipant
+        with MCPParticipant(root, 'sap_business_agents_platform.mcp_server', __file__) as participant:
+            serve(args.mode, participant)
+    else:
+        # Older externally configured brokers retain the writer guard and are
+        # never implicitly registered against a guessed repository.
+        serve(args.mode)
 
 
 if __name__ == "__main__":

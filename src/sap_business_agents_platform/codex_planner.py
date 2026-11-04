@@ -119,6 +119,7 @@ def _with_authoring_mcp(client: Any, session: dict[str, str]) -> Any:
         f"mcp_servers.{name}.env.SAPBA_INTERNAL_API_URL={json.dumps(session['internal_api_url'])}",
         f"mcp_servers.{name}.env.SAPBA_HARNESS_RUN_ID={json.dumps(session['operation_id'])}",
         f"mcp_servers.{name}.env.SAPBA_HARNESS_CAPABILITY={json.dumps(session['capability'])}",
+        *([f"mcp_servers.{name}.env.SAPBA_STARTUP_REPOSITORY={json.dumps(session['repository_root'])}"] if session.get('repository_root') else []),
         f"mcp_servers.{name}.env.PYTHONUTF8={json.dumps('1')}",
     ]
     for value in values:
